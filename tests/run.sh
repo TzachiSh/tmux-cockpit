@@ -12073,15 +12073,12 @@ GIT_NO_LAZY_FETCH=1 PATH="$LF/old:$LF/hb:$PATH" git -C "$LF/c" diff --numstat HE
 is "old/git drops GIT_NO_LAZY_FETCH and runs git: the remote fires through it" "up" \
    "$(head -1 "$LFM" 2>/dev/null)"
 rm -f "$LFM"
-# A user's own switch or worktree add still fetches what it checks out; a diff does not.
+# The worktree hook's add still fetches what it checks out; a diff does not.
 is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \
    "$( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" diff --numstat main origin/side 2>/dev/null)"
-( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" switch -q --track origin/side ) >/dev/null 2>&1
-is "while switch --track through it fetches the branch's blob" "g" \
-    "$(cat "$LF/c2/g.txt" 2>/dev/null)"
 ( . "$DIR/scripts/lib/git.sh"
 git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
-is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
+is "while worktree add through it fetches the tree's blob" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
 rm -rf "$LF"; unset LF LFM lfu lfx lfk; unset -f lf_paths
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
@@ -15998,10 +15995,9 @@ case "$tfout" in
 esac
 is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
 
-# Releases after v0.4.0 list the Linux x86_64 asset alone (dist-workspace.toml). A Mac keeps
-# its target, so a pin up to v0.4.0 still fetches its asset, and past that it is told there
-# is none and goes to the source build, as Linux aarch64 does: never the uname `*)` arm,
-# which only prints a hint and builds nothing.
+# Releases list the Linux x86_64 asset alone (dist-workspace.toml). A Mac keeps its target,
+# so it is told there is none and goes to the source build, as Linux aarch64 does: never the
+# uname `*)` arm, which only prints a hint and builds nothing.
 mkdir -p "$TF/un" "$TF/r el/cockpit-tui-v0.8.1"
 printf '#!/bin/sh\ncase "$1" in -s) echo Darwin ;; -m) echo arm64 ;; *) exec %s "$@" ;; esac\n' \
     /usr/bin/uname > "$TF/un/uname"
@@ -23632,13 +23628,13 @@ git -C "$BRR" worktree remove --force "$BRW" >/dev/null 2>&1
 rm -rf "$BRR" "$BRM" "$BRW"
 fi
 
-echo "== tmux-branch (#246, #228): an older binary's action line is checked, then acted on =="
+echo "== tmux-branch (#246, #1271): an answer on stdout is refused, never acted on =="
 BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
 BRX=$(mktmpd)
 cat > "$BRX/cockpit-tui" <<'EOS'
 #!/bin/sh
-# prints BR_STUB_OUT once, then leaves like esc, so a refused answer cannot loop; each run
-# is a line in BR_STUB_OUT.runs
+# prints BR_STUB_OUT once, then leaves like esc, so a script that drew the picker again would
+# end there; each run is a line in BR_STUB_OUT.runs
 echo x >> "$BR_STUB_OUT.runs"
 [ -e "$BR_STUB_OUT.used" ] && exit 1
 : > "$BR_STUB_OUT.used"; cat "$BR_STUB_OUT"
@@ -23657,63 +23653,14 @@ br_want() {                   # br_want <label> <answer> <expected text>
     esac
     is "$1: nothing was checked out" "main" "$(br_cur "$BRR")"
 }
-# Since #228 the binary runs switch, track and create itself (its checks are
-# act_refuses_what_tmux_branch_refused_and_checks_out_nothing in tui/tests/branch.rs) and
-# prints nothing after one ran. The release a default install fetches (0.4.0) still prints
-# the action line, and the script's old-binary path checks and acts on it, as before.
-br_want "older binary: an unknown verb is refused" 'rm -rf /' "unexpected answer"
-br_want "older binary: an unknown answer names the stale binary" 'rm -rf /' \
-    "older than the plugin"
-br_want "older binary: a verb with no name is refused" 'switch' "not a branch name"
-br_want "older binary: a name git rejects is refused" 'switch ../x' "not a branch name"
-br_want "older binary: a branch that does not exist is refused" 'switch nope' "no such branch"
-br_want "older binary: track of a local branch is refused" 'track old' "no such branch"
-br_want "older binary: create with an invalid name is refused" 'create bad..name' \
-    "not a branch name"
-br_want "older binary: two lines are refused" $'switch old\nswitch main' "not a branch name"
-br_stub 'switch old' >/dev/null
-is "older binary: a switch line is acted on" "old" "$(br_cur "$BRR")"
-git -C "$BRR" switch -q main
-br_stub 'switch feat/$(touch${IFS}x);`id`' >/dev/null
-is "older binary: a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' \
-    "$(br_cur "$BRR")"
-is "older binary: and no command in it ran" "none" \
-    "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
-git -C "$BRR" switch -q main
-br_stub 'track origin/only-remote' >/dev/null
-is "older binary: a track line makes a local branch from the remote one" "only-remote" \
-    "$(br_cur "$BRR")"
-git -C "$BRR" switch -q main
-br_stub 'create fresh' >/dev/null
-is "older binary: a create line makes the branch" "fresh" "$(br_cur "$BRR")"
-git -C "$BRR" switch -q main
-# The binary since #228 prints nothing once it acted: the script says nothing and acts on nothing.
+# Since #228 the binary runs every action itself and prints nothing once one ran. A line on
+# stdout comes from a binary older than the plugin: the script acts on none (#1271).
+br_want "an unknown answer is refused" 'rm -rf /' "unexpected answer"
+br_want "an unknown answer names the stale binary" 'rm -rf /' "older than the plugin"
+# The script says nothing and acts on nothing when the answer is empty.
 is "an empty answer prints nothing and switches nothing" "0 main|" \
     "$(bre=$(br_stub ''); echo "$? $(br_cur "$BRR")|$bre")"
-# #1272: lib/git.sh blanks the drivers the superproject's config names. With submodule.recurse
-# set, a switch that moves a submodule checks it out, and the submodule's own config names a
-# driver that scan never read. The binary's twin is in tui/tests/branch.rs.
-BRSM=$(mktmpd)
-(
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-    git init -q -b main "$BRSM/sub" && cd "$BRSM/sub" || exit 1
-    echo '*.t filter=evil' > .gitattributes; echo one > f.t; git add -A; git commit -q -m one
-    echo two > f.t; git commit -q -am two
-    git init -q -b main "$BRSM/sup" && cd "$BRSM/sup" || exit 1
-    git -c protocol.file.allow=always submodule add -q "$BRSM/sub" sub; git commit -q -m sub
-    git switch -q -c oldsub; git -C sub checkout -q HEAD~1; git add sub; git commit -q -m oldsub
-    git switch -q main; git -C sub checkout -q main
-    git -C sub config filter.evil.smudge "touch $(tq "$BRSM/smudged"); cat"
-    git config submodule.recurse true
-) >/dev/null 2>&1
-rm -f "$BRX/out.used"; printf 'switch oldsub\n' > "$BRX/out"
-env -u TMUX COCKPIT_TUI_BIN="$BRX/cockpit-tui" BR_STUB_OUT="$BRX/out" \
-    "$DIR/scripts/tmux-branch" "$BRSM/sup" </dev/null >/dev/null 2>&1
-is "older binary: a switch runs no filter driver a submodule's own config names (#1272)" \
-    "oldsub two none" "$(br_cur "$BRSM/sup") $(git -C "$BRSM/sup/sub" log -1 --format=%s 2>&1) \
-$([ -e "$BRSM/smudged" ] && echo ran || echo none)"
-# The script acts on no answer (#1271): every line the old binary printed gets the
-# stale-binary message, and nothing is checked out.
+# Every line the old binary printed gets the stale-binary message, and nothing is checked out.
 for brv in 'switch old' 'track origin/only-remote' 'create fresh1271' "goto $BRR/none"; do
     bro=$(br_stub "$brv"); brc=$(br_cur "$BRR"); git -C "$BRR" switch -q main 2>/dev/null
     case "$bro" in
@@ -23726,31 +23673,7 @@ done
 rm -f "$BRX/out.runs"; br_stub 'rm -rf /' >/dev/null
 is "a refused answer ends the popup: the picker ran once" "1" \
    "$(grep -c . "$BRX/out.runs" 2>/dev/null)"
-rm -rf "$BRR" "$BRM" "$BRX" "$BRSM"
-
-echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
-# The whole popup flow: the key, display-popup, the script, and a stub cockpit-tui that
-# answers --version as the 0.4.0 release and `branch` with `switch old`, once.
-if need_tmux "prefix b with an older binary"; then :; else
-OBS="cockpit-ob-$$"; OBO="cockpit-obo-$$"; SOCKS="$SOCKS $OBS $OBO"; OBD=$(mktmpd)
-br_repo "$OBD/r" "$OBD/m"
-mkdir -p "$OBD/bin"
-printf '%s\n' '#!/bin/sh' 'case "$1" in' '--version) echo "cockpit-tui 0.4.0" ;;' \
-    "branch) [ -e $(tq "$OBD/used") ] && exit 1; : > $(tq "$OBD/used"); echo 'switch old' ;;" \
-    'esac' > "$OBD/bin/cockpit-tui"
-chmod +x "$OBD/bin/cockpit-tui"
-env COCKPIT_TUI_BIN="$OBD/bin/cockpit-tui" "$TMUX_REAL" -L "$OBS" -f /dev/null \
-    new-session -d -s t -x 120 -y 30 -c "$OBD/r" 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$OBS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-"$TMUX_REAL" -L "$OBO" -f /dev/null new-session -d -s o -x 120 -y 32 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $OBS attach -t t" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$OBS" list-clients -F '#{client_name}'
-"$TMUX_REAL" -L "$OBO" send-keys -t o C-b b
-until_out old br_cur "$OBD/r"
-is "prefix b with a 0.4.0-style binary switches to the branch it names" "old" "$(br_cur "$OBD/r")"
-"$TMUX_REAL" -L "$OBO" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$OBS" kill-server >/dev/null 2>&1
-fi
+rm -rf "$BRR" "$BRM" "$BRX"
 
 echo "== tmux-branch (#246): its refusals are unchanged =="
 BRN=$(mktmpd); BRR=$(mktmpd); br_repo "$BRR" "$(mktmpd)"
@@ -23792,630 +23715,6 @@ case "$out" in
     *) bad "$brl" "cockpit: not a git repository: $BRN" "$out" ;;
 esac
 rm -rf "$BRN" "$BRR"
-
-echo "== tmux-branch: older binary, an inherited GIT_DIR or kin never switches another repo =="
-# The old-binary path (#228) still runs git switch in the shell; the binary's own switch has
-# its twin in tui/tests/branch_act_env.rs. The stub below prints the action line as 0.4.0 does.
-# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
-# inherits it. The picker lists the pane repo's branches (gitsafe strips the
-# four), so the switch must land there too. FAIL-first: on the old code each
-# variable below switched, or checked out into, the other repo. The last three
-# (#730): another object store and a bad attribute source failed the switch, and
-# a replace base held a swapped blob for conf's `a` that the checkout wrote.
-BRE=$(mktmpd)
-# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
-# differs from main's, so a switch writes the tree it checks out.
-printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" \
-    > "$BRE/cockpit-tui"
-chmod +x "$BRE/cockpit-tui"
-for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index \
-         GIT_OBJECT_DIRECTORY=@/.git/objects GIT_ATTR_SOURCE=no-such-rev \
-         GIT_REPLACE_REF_BASE=refs/alt/; do
-    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
-    git -C "$BRE/pane" update-ref "refs/alt/$(git -C "$BRE/pane" rev-parse conf:a)" \
-        "$(echo swapped | git -C "$BRE/pane" hash-object -w --stdin)"
-    (
-      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
-      echo other > a; git add a; git commit -q -m init; git branch conf
-    ) >/dev/null 2>&1
-    brev=${v#*=}; brev=${brev//@/$BRE/other}
-    ( export "${v%%=*}=$brev"
-      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 \
-          "$DIR/scripts/tmux-branch" "$BRE/pane" \
-          </dev/null >/dev/null 2>&1 )
-    is "older binary: ${v%%=*} inherited: the pane repo switches, the other stays" \
-       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
-$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
-done
-rm -rf "$BRE"
-
-# --- #303 branch popup: a branch another worktree holds jumps there -----------
-# cockpit-tui is a stub that answers `goto <path>`, once, as a 0.4.0 binary does: these
-# blocks, to #470's, pin the script's old-binary goto, which goes with #1271. The binary's
-# own goto since #228 is tui/tests/branch_goto.rs. All on private servers.
-bg_server() {                 # bg_server <socket> <dir>  one session, one pane in <dir>
-    "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$(fesc "$2")" \
-        'exec sleep 300' >/dev/null 2>&1
-    "$TMUX_REAL" -L "$1" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-}
-# bg_pane <socket> <dir> <cmd>  a new window in <dir>; prints its pane id
-bg_pane() {
-    # -c is a format
-    "$TMUX_REAL" -L "$1" new-window -P -F '#{pane_id}' -t t: -c "$(fesc "$2")" "$3" 2>/dev/null
-}
-# bg_goto <socket> <origin-pane> <repo> <path>  -> the script's exit code
-bg_goto() {
-    local sp mark; sock_path "$1" sp
-    mark=$(mktmpd)
-    printf '#!/bin/sh\n[ -e "%s/ran" ] && exit 1\n: > "%s/ran"\nprintf "goto %%s\\n" "$BG_GOTO"\n' \
-        "$mark" "$mark" > "$mark/cockpit-tui"
-    chmod +x "$mark/cockpit-tui"
-    env ${BG_SHIM:+PATH="$BG_SHIM:$PATH"} TMUX="$sp,0,0" \
-        COCKPIT_TUI_BIN="$mark/cockpit-tui" BG_GOTO="$4" \
-        timeout 30 "$DIR/scripts/tmux-branch" -p "$2" "$3" </dev/null >/dev/null 2>"$mark/err"
-    BG_ERR=$(cat "$mark/err")
-}
-bg_active() { "$TMUX_REAL" -L "$1" display-message -p -t t: '#{pane_id}'; }
-# #566: a new pane's path reads empty until tmux finds its shell. Wait for <want>, then read.
-bg_waitpath() {               # bg_waitpath <socket> <want>
-    until_out "$(printf '%q' "$2")" \
-        "$TMUX_REAL" -L "$1" display-message -p -t t: '#{pane_current_path}'
-}
-bg_windows() { "$TMUX_REAL" -L "$1" list-windows -t t: 2>/dev/null | grep -c .; }
-
-echo "== tmux-branch (#303): ↵ on a branch another worktree holds goes to that worktree =="
-if need_tmux "branch goto"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"
-BGR=$(mktmpd); BGM=$(mktmpd); br_repo "$BGR" "$BGM"
-BGD=$(mktmpd); BGF="$BGD/F"
-# A space and a tmux format in the path; -c would run the #( ) if it were not escaped.
-BGW="$BGD/wt #(touch $BGF) x"
-git -C "$BGR" worktree add -q "$BGW" held >/dev/null 2>&1
-mkdir -p "$BGW/sub"
-BGS="cockpit-bg303-$$"; SOCKS="$SOCKS $BGS"
-bg_server "$BGS" "$BGR"
-BGO=$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id}' | head -1)
-BGP=$(bg_pane "$BGS" "$BGW" 'exec sleep 300')
-"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
-bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
-is "a goto to a worktree with a pane in it says nothing on stderr" "" "$BG_ERR"
-is "it selects the pane already in that worktree" "$BGP" "$(bg_active "$BGS")"
-is "and opens no new window" "2" "$(bg_windows "$BGS")"
-is "and no #( ) in the path ran" "none" "$([ -e "$BGF" ] && echo ran || echo none)"
-
-# An agent pane in a subdirectory of the tree, in a later window than the shell.
-BGA=$(bg_pane "$BGS" "$BGW/sub" 'exec -a claude sleep 300')
-until_out claude "$TMUX_REAL" -L "$BGS" display-message -p -t "$BGA" '#{pane_current_command}'
-"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
-bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
-is "an agent pane is preferred over a shell in the same tree" "$BGA" "$(bg_active "$BGS")"
-
-# An agent whose cwd is the main checkout but whose @cockpit_dir names the worktree.
-"$TMUX_REAL" -L "$BGS" kill-pane -t "$BGA"; "$TMUX_REAL" -L "$BGS" kill-pane -t "$BGP"
-BGC=$(bg_pane "$BGS" "$BGR" 'exec -a claude sleep 300')
-"$TMUX_REAL" -L "$BGS" set-option -p -t "$BGC" @cockpit_dir "$BGW"
-until_out claude "$TMUX_REAL" -L "$BGS" display-message -p -t "$BGC" '#{pane_current_command}'
-"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
-bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
-is "a pane whose @cockpit_dir is the worktree counts, whatever its cwd" "$BGC" "$(bg_active "$BGS")"
-
-# No pane there: a new window in the tree. No pane's cwd is touched.
-"$TMUX_REAL" -L "$BGS" kill-pane -t "$BGC"
-before=$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id} #{pane_current_path}')
-bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
-is "with no pane there it opens one more window" "2" "$(bg_windows "$BGS")"
-bg_waitpath "$BGS" "$BGW"
-is "starting in the worktree, space and #( ) intact" "$BGW" \
-   "$("$TMUX_REAL" -L "$BGS" display-message -p -t t: '#{pane_current_path}')"
-is "and no #( ) in the path ran" "none" "$([ -e "$BGF" ] && echo ran || echo none)"
-is "and the pane it came from keeps its cwd" "$before" \
-   "$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id} #{pane_current_path}' |
-       grep -F -x -f <(printf '%s\n' "$before"))"
-
-# The line is untrusted: only a worktree of this repo is a place to go.
-n=$(bg_windows "$BGS")
-bg_goto "$BGS" "$BGO" "$BGR" "$BGD"
-case "$BG_ERR" in
-    *"not a worktree"*) ok "a directory that is no worktree of the repo is refused, by name" ;;
-    *) bad "a directory that is no worktree of the repo is refused, by name" \
-            "not a worktree" "$BG_ERR" ;;
-esac
-is "and opens no window" "$n" "$(bg_windows "$BGS")"
-bg_goto "$BGS" "$BGO" "$BGR" "relative/path"
-is "a relative path opens no window either" "$n" "$(bg_windows "$BGS")"
-"$TMUX_REAL" -L "$BGS" kill-server >/dev/null 2>&1
-
-# A worktree nested inside the checkout: a pane there belongs to it, not to the checkout.
-BGN="$BGR/nested"
-git -C "$BGR" worktree add -q "$BGN" old >/dev/null 2>&1
-BGS2="cockpit-bg303b-$$"; SOCKS="$SOCKS $BGS2"
-bg_server "$BGS2" "$BGN"
-BGO2=$("$TMUX_REAL" -L "$BGS2" list-panes -a -F '#{pane_id}' | head -1)
-bg_goto "$BGS2" "$BGO2" "$BGN" "$BGR"
-is "a pane in a nested worktree is not a pane of the enclosing checkout" "2" "$(bg_windows "$BGS2")"
-bg_waitpath "$BGS2" "$BGR"
-is "and the new window is the checkout" "$BGR" \
-    "$("$TMUX_REAL" -L "$BGS2" display-message -p -t t: '#{pane_current_path}')"
-"$TMUX_REAL" -L "$BGS2" kill-server >/dev/null 2>&1
-
-# One tree per pane (finding: @cockpit_dir over cwd). An agent that works in the worktree
-# from a cwd in the main checkout is a pane of the worktree, so `goto main` skips it.
-BGS3="cockpit-bg303c-$$"; SOCKS="$SOCKS $BGS3"
-bg_server "$BGS3" "$BGW"
-BGO3=$("$TMUX_REAL" -L "$BGS3" list-panes -a -F '#{pane_id}' | head -1)
-BGA3=$(bg_pane "$BGS3" "$BGR" 'exec -a claude sleep 300')
-"$TMUX_REAL" -L "$BGS3" set-option -p -t "$BGA3" @cockpit_dir "$BGW"
-BGM3=$(bg_pane "$BGS3" "$BGR" 'exec sleep 300')
-until_out claude "$TMUX_REAL" -L "$BGS3" display-message -p -t "$BGA3" '#{pane_current_command}'
-"$TMUX_REAL" -L "$BGS3" select-window -t "$BGO3"
-bg_goto "$BGS3" "$BGO3" "$BGR" "$BGR"
-is "an agent with cwd main and @cockpit_dir the worktree is not a pane of main" "$BGM3" \
-    "$(bg_active "$BGS3")"
-"$TMUX_REAL" -L "$BGS3" kill-server >/dev/null 2>&1
-
-# A worktree whose directory was deleted by hand is still listed.
-BGG="$BGD/gone"
-git -C "$BGR" worktree add -q -b gone303 "$BGG" >/dev/null 2>&1; rm -rf "$BGG"
-BGS4="cockpit-bg303d-$$"; SOCKS="$SOCKS $BGS4"
-bg_server "$BGS4" "$BGR"
-BGO4=$("$TMUX_REAL" -L "$BGS4" list-panes -a -F '#{pane_id}' | head -1)
-bg_goto "$BGS4" "$BGO4" "$BGR" "$BGG"
-case "$BG_ERR" in
-    *"is gone"*) ok "a listed worktree whose directory is gone is refused, by name" ;;
-    *) bad "a listed worktree whose directory is gone is refused, by name" "is gone" "$BG_ERR" ;;
-esac
-is "and opens no window" "1" "$(bg_windows "$BGS4")"
-
-# #[ in a directory name: fesc keeps it, and a sibling that differs by the doubling is not it.
-BGX="$BGD/a#[b]c"; mkdir -p "$BGD/a##[b]c"
-git -C "$BGR" worktree add -q -b brk303 "$BGX" >/dev/null 2>&1
-bg_goto "$BGS4" "$BGO4" "$BGR" "$BGX"
-bg_waitpath "$BGS4" "$BGX"
-is "a worktree named a#[b]c opens in that directory, not in a##[b]c" "$BGX" \
-   "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
-
-# git before 2.36 rejects `worktree list -z`: a shim that does the same. The plain porcelain
-# is read; a worktree whose path has a newline is cut in two by it and is left out.
-BGOLD=$(mktmpd); BGGIT=$(command -v git)
-printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
-    "$BGGIT" > "$BGOLD/git"
-chmod +x "$BGOLD/git"
-BGP4=$(bg_pane "$BGS4" "$BGW" 'exec sleep 300')
-"$TMUX_REAL" -L "$BGS4" select-window -t "$BGO4"
-BG_SHIM=$BGOLD bg_goto "$BGS4" "$BGO4" "$BGR" "$BGW"
-is "without worktree list -z the worktree is still found, and its pane selected" "$BGP4" \
-    "$(bg_active "$BGS4")"
-git -C "$BGR" worktree add -q -b nl303 "$BGD/nl"$'\n'"x" >/dev/null 2>&1
-BG_SHIM=$BGOLD bg_goto "$BGS4" "$BGO4" "$BGR" "$BGD/nl"
-case "$BG_ERR" in
-    *"not a worktree"*) \
-            ok "and a newline path, cut in two by the plain porcelain, is not taken for a worktree" ;;
-    *) bad "and a newline path, cut in two by the plain porcelain, is not taken for a worktree" \
-            "not a worktree" "$BG_ERR" ;;
-esac
-
-# The two plain new-window paths: the origin pane is gone, and none was given.
-BGW3="$BGD/third"; git -C "$BGR" worktree add -q -b third303 "$BGW3" >/dev/null 2>&1
-n=$(bg_windows "$BGS4")
-bg_goto "$BGS4" "%99" "$BGR" "$BGW3"
-is "an origin pane that is gone still gets a window in the worktree" "$((n+1))" \
-    "$(bg_windows "$BGS4")"
-bg_waitpath "$BGS4" "$BGW3"
-is "and it starts there" "$BGW3" \
-    "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
-git -C "$BGR" worktree add -q -b fourth303 "$BGD/fourth" >/dev/null 2>&1
-bg_goto "$BGS4" "" "$BGR" "$BGD/fourth"
-is "with no origin pane at all it opens a window too" "$((n+2))" "$(bg_windows "$BGS4")"
-"$TMUX_REAL" -L "$BGS4" kill-server >/dev/null 2>&1
-
-# The deepest worktree holds a pane, whichever order git lists them in. Git lists them by
-# path, so a parent always precedes the tree nested in it; a git shim reverses the records.
-if command -v python3 >/dev/null 2>&1; then
-BGQ=$(mktmpd); BGSH=$(mktmpd); BGGIT=$(command -v git)
-git -C "$BGR" worktree add -q -b par303 "$BGQ/par" >/dev/null 2>&1
-git -C "$BGR" worktree add -q -b nest303 "$BGQ/par/nest" >/dev/null 2>&1
-printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 -c %s ;;\n *) exec %s "$@" ;;\nesac\n' \
-    "$BGGIT" "'import sys;r=[x for x in sys.stdin.buffer.read().split(b\"\\0\\0\") if x];r.reverse();sys.stdout.buffer.write(b\"\\0\\0\".join(r)+b\"\\0\\0\")'" "$BGGIT" > "$BGSH/git"
-chmod +x "$BGSH/git"
-is "the shim lists the nested tree before its parent" "$BGQ/par/nest" \
-   "$(PATH="$BGSH:$PATH" git -C "$BGR" worktree list --porcelain -z | tr '\0' '\n' |
-       sed -n 's/^worktree //p' | grep "$BGQ" | head -1)"
-BGS5="cockpit-bg303e-$$"; SOCKS="$SOCKS $BGS5"
-bg_server "$BGS5" "$BGQ/par/nest"
-BGO5=$("$TMUX_REAL" -L "$BGS5" list-panes -a -F '#{pane_id}' | head -1)
-BG_SHIM=$BGSH bg_goto "$BGS5" "$BGO5" "$BGR" "$BGQ/par"
-is "a pane in a tree nested in a linked worktree is not a pane of it, nested listed first" "2" \
-    "$(bg_windows "$BGS5")"
-"$TMUX_REAL" -L "$BGS5" kill-server >/dev/null 2>&1
-# #560: which tree the reverse put first hung on mktemp's names. This shim moves the records
-# named in BG_FRONT, one path a line, to the front in that order, so a linked tree is first.
-cat > "$BGSH/front.py" <<'EOF'
-import os, sys
-f = [b"worktree " + p.encode() for p in os.environ["BG_FRONT"].split("\n")]
-r = [x for x in sys.stdin.buffer.read().split(b"\0\0") if x]
-def rank(rec):  # a record's place: its worktree line's index in BG_FRONT, else after them
-    w = rec.split(b"\0")[0]
-    return f.index(w) if w in f else len(f)
-sys.stdout.buffer.write(b"\0\0".join(sorted(r, key=rank)) + b"\0\0")
-EOF
-printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 %s ;;\n' \
-    "$BGGIT" "$BGSH/front.py" > "$BGSH/git"
-printf ' *) exec %s "$@" ;;\nesac\n' "$BGGIT" >> "$BGSH/git"
-is "the front shim lists nest, then par, first" "$BGQ/par/nest $BGQ/par" \
-   "$(BG_FRONT="$BGQ/par/nest"$'\n'"$BGQ/par" PATH="$BGSH:$PATH" \
-      git -C "$BGR" worktree list --porcelain -z \
-      | tr '\0' '\n' | sed -n 's/^worktree //p' | head -2 | paste -sd' ')"
-bg_front() {                  # bg_front <n> <label> <front paths>  goto par from a pane in nest
-    local s="cockpit-bg560$1-$$" o; SOCKS="$SOCKS $s"
-    bg_server "$s" "$BGQ/par/nest"
-    o=$("$TMUX_REAL" -L "$s" list-panes -a -F '#{pane_id}' | head -1)
-    BG_FRONT=$3 BG_SHIM=$BGSH bg_goto "$s" "$o" "$BGR" "$BGQ/par"
-    is "$2: says nothing on stderr" "" "$BG_ERR"
-    is "$2: opens a window in it" "2" "$(bg_windows "$s")"
-    "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1
-}
-bg_front a "a nested tree listed first, ahead of its parent, keeps its record" \
-    "$BGQ/par/nest"$'\n'"$BGQ/par"
-bg_front b "a linked tree listed first keeps its record" "$BGQ/par"
-unset -f bg_front
-else skip_ "no python3 for the git shim"; skip_ "nested-first order"; fi
-
-# Across sessions: the point of the feature. A control-mode client sits on s1; the
-# worktree's panes are in s2, in a window that has a second pane and is not current.
-# d0 is the first session ($0), which is what the script's $TMUX names: a new-window
-# that is not pinned to the origin pane lands there, not in s1.
-BGW2="$BGD/second"; git -C "$BGR" worktree add -q -b second303 "$BGW2" >/dev/null 2>&1
-BGS6="cockpit-bg303f-$$"; SOCKS="$SOCKS $BGS6"
-tx() { "$TMUX_REAL" -L "$BGS6" "$@"; }
-tx -f /dev/null new-session -d -s d0 -x 100 -y 30 -c "$BGD" 'exec sleep 300' >/dev/null 2>&1
-tx new-session -d -s s1 -x 100 -y 30 -c "$BGR" 'exec sleep 300' >/dev/null 2>&1
-tx new-session -d -s s2 -x 100 -y 30 -c "$BGD" 'exec sleep 300' >/dev/null 2>&1
-BGO6=$(tx list-panes -t s1 -F '#{pane_id}')
-BGT1=$(tx new-window -P -F '#{pane_id}' -t s2: -c "$(fesc "$BGW")" 'exec sleep 300')
-BGT2=$(tx split-window -P -F '#{pane_id}' -t "$BGT1" -c "$(fesc "$BGW")" 'exec sleep 300')
-BGTW=$(tx display-message -p -t "$BGT1" '#{window_id}')
-tx select-window -t s2:0
-BGFIFO=$(mktmpd)/in; mkfifo "$BGFIFO"
-tx -C attach -t s1 < "$BGFIFO" > /dev/null 2>&1 &
-exec 8> "$BGFIFO"
-until_out '?*' tx list-clients -F '#{client_name}'
-bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW"
-is "the client attached to s1 is switched to the worktree's session" "s2" \
-    "$(tx list-clients -F '#{client_session}')"
-is "and the window is the one holding the pane" "$BGTW" \
-    "$(tx display-message -p -t s2: '#{window_id}')"
-is "and the pane is the first one in the tree, though the other was active" "$BGT1" \
-    "$(tx display-message -p -t s2: '#{pane_id}')"
-exec 8>&-
-until_out '' tx list-clients -F '#{client_name}'
-# no client, so only select-window and select-pane can do it
-tx select-window -t s2:0; tx select-pane -t "$BGT2"
-bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW"
-is "with no client, the window is selected" "$BGTW" "$(tx display-message -p -t s2: '#{window_id}')"
-is "and so is the pane" "$BGT1" "$(tx display-message -p -t s2: '#{pane_id}')"
-bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW2"
-is "a new window lands in the session of the pane the popup came from" "2" \
-    "$(tx list-windows -t s1 | grep -c .)"
-is "and not in the session \$TMUX names" "1" "$(tx list-windows -t d0 | grep -c .)"
-tx kill-server >/dev/null 2>&1
-rm -rf "$BGR" "$BGM" "$BGD"
-fi
-
-echo "== tmux-branch (#348): without worktree list -z, a tree has a .git, a label is a line =="
-# git before 2.36 has no -z, and a path with a newline in it can print any line it likes:
-# `inj<NL>worktree <dir>` forges a record for <dir>, `<dir><NL>barex` hangs a cut on <dir>.
-if need_tmux "branch goto, old git"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"
-OGR=$(mktmpd); OGM=$(mktmpd); br_repo "$OGR" "$OGM"
-OGD=$(mktmpd); OGP="$OGD/plain"; mkdir -p "$OGP"
-OGOLD=$(mktmpd); OGGIT=$(command -v git)
-printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
-    "$OGGIT" > "$OGOLD/git"
-chmod +x "$OGOLD/git"
-git -C "$OGR" worktree add -q -b forge348 "$OGD/inj"$'\n'"worktree $OGP" >/dev/null 2>&1
-is "the plain porcelain carries the forged line" "worktree $OGP" \
-   "$(PATH="$OGOLD:$PATH" git -C "$OGR" worktree list --porcelain | grep -x -F "worktree $OGP")"
-OGS="cockpit-og348-$$"; SOCKS="$SOCKS $OGS"
-bg_server "$OGS" "$OGD"
-OGO=$("$TMUX_REAL" -L "$OGS" list-panes -a -F '#{pane_id}' | head -1)
-n=$(bg_windows "$OGS")
-BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGP"
-case "$BG_ERR" in
-    *"not a worktree"*) ok "a plain dir that a forged line names is refused, by name" ;;
-    *) bad "a plain dir that a forged line names is refused, by name" "not a worktree" "$BG_ERR" ;;
-esac
-is "and opens no window there" "$n" "$(bg_windows "$OGS")"
-BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGR"
-bg_waitpath "$OGS" "$OGR"
-is "the main checkout, whose .git is a directory, still opens" "$OGR" \
-   "$("$TMUX_REAL" -L "$OGS" display-message -p -t t: '#{pane_current_path}')"
-
-# A line that only starts with a label cuts the record. The path before the cut names
-# nothing, so a record kept by mistake reads as a gone worktree, not as a refusal (#532).
-for v in barex detachedx lockedx prunablex; do
-    git -C "$OGR" worktree add -q -b "cut-$v" "$OGD/nx-$v"$'\n'"$v" >/dev/null 2>&1
-    BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/nx-$v"
-    case "$BG_ERR" in
-        *"not a worktree"*) ok "a record cut by a line '$v' is no worktree, not a gone one" ;;
-        *) bad "a record cut by a line '$v' is no worktree, not a gone one" "not a worktree" \
-               "$BG_ERR" ;;
-    esac
-done
-
-# A listed worktree whose directory was deleted is no forgery: goto names it gone, as on new git.
-git -C "$OGR" worktree add -q -b gone348 "$OGD/gone" >/dev/null 2>&1; rm -rf "$OGD/gone"
-BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/gone"
-case "$BG_ERR" in
-    *"is gone"*) ok "without -z a deleted listed worktree is refused as gone, by name" ;;
-    *) bad "without -z a deleted listed worktree is refused as gone, by name" "is gone" \
-           "$BG_ERR" ;;
-esac
-
-"$TMUX_REAL" -L "$OGS" kill-server >/dev/null 2>&1
-
-# A whole `detached` line is a label: a detached tree nested in main keeps its own panes.
-git -C "$OGR" worktree add -q --detach "$OGR/det" >/dev/null 2>&1
-OGS2="cockpit-og348b-$$"; SOCKS="$SOCKS $OGS2"
-bg_server "$OGS2" "$OGR/det"
-OGO2=$("$TMUX_REAL" -L "$OGS2" list-panes -a -F '#{pane_id}' | head -1)
-BG_SHIM=$OGOLD bg_goto "$OGS2" "$OGO2" "$OGR" "$OGR"
-is "a pane in a detached tree nested in main is not main's: a window opens" "2" \
-   "$(bg_windows "$OGS2")"
-"$TMUX_REAL" -L "$OGS2" kill-server >/dev/null 2>&1
-rm -rf "$OGR" "$OGM" "$OGD"
-fi
-
-echo "== tmux-branch (#532): without worktree list -z, a tree is this repo's and a lock a label =="
-# A forged `worktree <dir>` line may name any checkout with a .git. On the fallback a record
-# is kept only when its .git is this repo's common dir, or a .git file whose gitdir sits in
-# its worktrees/ and links back to that same file.
-if need_tmux "branch goto, old git, this repo"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"
-CGR=$(mktmpd); CGM=$(mktmpd); br_repo "$CGR" "$CGM"
-CGD=$(mktmpd); CGOLD=$(mktmpd)
-printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
-    "$(command -v git)" > "$CGOLD/git"
-chmod +x "$CGOLD/git"
-CGS="cockpit-cg532-$$"; SOCKS="$SOCKS $CGS"
-bg_server "$CGS" "$CGD"
-CGO=$("$TMUX_REAL" -L "$CGS" list-panes -a -F '#{pane_id}' | head -1)
-cg_goto() { BG_SHIM=${CG_SHIM:-$CGOLD} bg_goto "$CGS" "$CGO" "${CG_DIR:-$CGR}" "$1"; }
-cg_refused() {                # cg_refused <label> <path>  goto names it no worktree, opens none
-    local n; n=$(bg_windows "$CGS")
-    cg_goto "$2"
-    case "$BG_ERR" in
-        *"not a worktree"*) ok "$1" ;;
-        *) bad "$1" "not a worktree" "$BG_ERR" ;;
-    esac
-    is "$1: no window opens" "$n" "$(bg_windows "$CGS")"
-}
-cg_opens() {                  # cg_opens <label> <path>  goto opens or selects a pane in it
-    "$TMUX_REAL" -L "$CGS" select-window -t "$CGO"
-    cg_goto "$2"
-    bg_waitpath "$CGS" "$2"
-    is "$1" "$2" "$("$TMUX_REAL" -L "$CGS" display-message -p -t t: '#{pane_current_path}')"
-}
-cg_forge() { git -C "$CGR" worktree add -q -b "$1" "$CGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
-
-br_repo "$CGD/other" "$CGD/om"
-git -C "$CGD/other" worktree add -q "$CGD/olink" held >/dev/null 2>&1
-cg_forge fo532 "$CGD/other"
-cg_refused "a forged line naming another repo's main checkout is refused" "$CGD/other"
-cg_forge fl532 "$CGD/olink"
-cg_refused "a forged line naming another repo's linked tree is refused" "$CGD/olink"
-
-git -C "$CGR" worktree add -q -b our532 "$CGD/our tree" >/dev/null 2>&1
-mkdir -p "$CGD/plant"; cp "$CGD/our tree/.git" "$CGD/plant/.git"
-cg_forge fp532 "$CGD/plant"
-cg_refused "a .git file copied from this repo's tree does not link back: refused" "$CGD/plant"
-cg_opens "this repo's linked tree, a space in its path, still opens" "$CGD/our tree"
-
-# git 2.7 to 2.12 print `rev-parse --git-common-dir` as the subdirectory prefix plus the
-# path from the top: from sub/deep, `sub/deep/.git`. A pane's cwd is often a subdirectory.
-CG212=$(mktmpd)
-printf '%s\n' '#!/usr/bin/env bash' \
-    'case " $* " in *" worktree list "*" -z "*) exit 129 ;; esac' \
-    'case " $* " in *" rev-parse --git-common-dir ") ;; *) exec '"$(command \
-        -v git)"' "$@" ;; esac' \
-    'pre=("${@:1:$#-2}"); real='"$(command -v git)" \
-    'top=$("$real" "${pre[@]}" rev-parse --show-toplevel) || exit' \
-    'px=$("$real" "${pre[@]}" rev-parse --show-prefix)' \
-    'c=$("$real" "${pre[@]}" -C "$top" rev-parse --git-common-dir) || exit' \
-    'case $c in /*) echo "$c" ;; *) echo "$px$c" ;; esac' > "$CG212/git"
-chmod +x "$CG212/git"
-mkdir -p "$CGR/sub/deep"
-is "the 2.12 shim answers from a subdirectory as 2.12 did" "sub/deep/.git" \
-   "$(cd "$CGR/sub/deep" && PATH="$CG212:$PATH" git rev-parse --git-common-dir)"
-CG_SHIM=$CG212 CG_DIR=$CGR/sub/deep \
-    cg_opens "on git 2.12, from a subdirectory, this repo's linked tree still opens" "$CGD/our tree"
-
-# A tree's .git file read as git reads it: whole (git < 2.23 kept a trailing blank in the
-# id), a trailing slash, a symlinked entry, and a .git hard-linked to one of ours.
-cg_entry() { local g; IFS= read -r g < "$1/.git"; printf '%s' "${g#gitdir: }"; }
-git -C "$CGR" worktree add -q -b tsp532 "$CGD/tsp " >/dev/null 2>&1
-mv "$(cg_entry "$CGD/tsp ")" "$CGR/.git/worktrees/tsp "
-printf 'gitdir: %s\n' "$CGR/.git/worktrees/tsp " > "$CGD/tsp /.git"
-cg_opens "a tree whose worktree id ends in a blank opens" "$CGD/tsp "
-git -C "$CGR" worktree add -q -b sl532 "$CGD/sl" >/dev/null 2>&1
-printf 'gitdir: %s/\n' "$(cg_entry "$CGD/sl")" > "$CGD/sl/.git"
-cg_opens "a tree whose gitdir ends in a slash opens" "$CGD/sl"
-git -C "$CGR" worktree add -q -b al532 "$CGD/al" >/dev/null 2>&1
-ln -s "$(cg_entry "$CGD/al")" "$CGD/alias"
-printf 'gitdir: %s\n' "$CGD/alias" > "$CGD/al/.git"
-cg_opens "a tree whose gitdir is a symlink to its entry opens" "$CGD/al"
-mkdir -p "$CGD/hard"; ln "$CGD/our tree/.git" "$CGD/hard/.git"
-cg_forge fh532 "$CGD/hard"
-cg_opens "a dir whose .git is a hard link to one of ours counts, as it does for git" "$CGD/hard"
-
-git -C "$CGR" worktree add -q -b lk532 "$CGD/lk" >/dev/null 2>&1
-git -C "$CGR" worktree lock "$CGD/lk" >/dev/null 2>&1
-cg_opens "a tree whose line is a bare 'locked' still opens" "$CGD/lk"
-git -C "$CGR" worktree add -q -b lr532 "$CGD/lr" >/dev/null 2>&1
-git -C "$CGR" worktree lock --reason "on usb" "$CGD/lr" >/dev/null 2>&1
-cg_opens "a tree locked with a reason still opens" "$CGD/lr"
-
-git -C "$CGR" worktree add -q -b emp532 "$CGD/e"$'\n'"worktree " >/dev/null 2>&1
-cg_refused "an empty worktree path is no worktree" ""
-
-"$TMUX_REAL" -L "$CGS" kill-server >/dev/null 2>&1
-rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
-fi
-
-echo "== tmux-branch (#537): a gone path is a prunable tree, and a git dir is no tree =="
-# On the fallback a missing path is kept only when some worktrees/*/gitdir names
-# <path>/.git, as git tests a tree for prunable. And when a main checkout's .git is a file,
-# git prints the git dir as its path, on either git: that is never a tree to open.
-if need_tmux "branch goto, gone paths and git dirs"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"
-PGR=$(mktmpd); PGM=$(mktmpd); br_repo "$PGR" "$PGM"
-PGD=$(mktmpd); PGOLD=$(mktmpd)
-printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
-    "$(command -v git)" > "$PGOLD/git"
-chmod +x "$PGOLD/git"
-PGS="cockpit-pg537-$$"; SOCKS="$SOCKS $PGS"
-bg_server "$PGS" "$PGD"
-PGO=$("$TMUX_REAL" -L "$PGS" list-panes -a -F '#{pane_id}' | head -1)
-pg_ids() { "$TMUX_REAL" -L "$PGS" list-windows -t t: -F '#{window_id}' | tr '\n' ' '; }
-# pg_says <label> <want> <repo> <path> [shim]  goto's error names <want>
-pg_says() {
-    local was id new=''
-    was=$(pg_ids)
-    BG_SHIM=${5-} bg_goto "$PGS" "$PGO" "$3" "$4"
-    case "$BG_ERR" in
-        *"$2"*) ok "$1" ;;
-        *) bad "$1" "$2" "$BG_ERR" ;;
-    esac
-    # Ids, not a count (#579): a window closing meanwhile would hide one goto opened.
-    for id in $(pg_ids); do case " $was " in *" $id "*) ;; *) new="$new$id " ;; esac; done
-    is "$1: no window opens" "" "$new"
-}
-pg_x() { git -C "$PGR" worktree add -q -b "$1" "$PGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
-
-git -C "$PGR" worktree add -q -b gone537 "$PGD/gone" >/dev/null 2>&1; rm -rf "$PGD/gone"
-pg_x fn537 "$PGD/nothere"
-pg_says "a forged line naming a missing path is no worktree" "not a worktree" \
-    "$PGR" "$PGD/nothere" "$PGOLD"
-pg_x fg537 "$PGD/gonex"
-pg_says "nor is one naming a path one letter off a gone tree" "not a worktree" \
-    "$PGR" "$PGD/gonex" "$PGOLD"
-pg_says "the gone tree itself is still named gone" "is gone" "$PGR" "$PGD/gone" "$PGOLD"
-# git before 2.24 kept a leading dot in the id; a glob of * skips such an entry.
-git -C "$PGR" worktree add -q -b dot537 "$PGD/.dg" >/dev/null 2>&1
-mv "$PGR/.git/worktrees/-dg" "$PGR/.git/worktrees/.dg"
-printf 'gitdir: %s\n' "$PGR/.git/worktrees/.dg" > "$PGD/.dg/.git"; rm -rf "$PGD/.dg"
-pg_says "a gone tree whose id starts with a dot is named gone" "is gone" "$PGR" "$PGD/.dg" "$PGOLD"
-# #584: git lists an absolute gitdir as written, x/.. and all, so the fallback resolves
-# the wanted <path>/.git as text too, not only the gitdir it compares with.
-git -C "$PGR" worktree add -q -b want584 "$PGD/want" >/dev/null 2>&1
-printf '%s\n' "$PGD/x/../want/.git" > "$PGR/.git/worktrees/want/gitdir"; rm -rf "$PGD/want"
-pg_says "a gone tree whose absolute gitdir holds x/.. is named gone" "is gone" \
-    "$PGR" "$PGD/x/../want" "$PGOLD"
-# #696: a symlink before the .. is a name too. git lists $PGD/lnk/../lw as written;
-# resolved as text, that path is $PGD/lw, not $PGD/sub/lw, where the link leads. A
-# forged line naming that place names no entry.
-mkdir -p "$PGD/sub/deep"; ln -s "$PGD/sub/deep" "$PGD/lnk"
-git -C "$PGR" worktree add -q -b lnk696 "$PGD/lw" >/dev/null 2>&1
-printf '%s\n' "$PGD/lnk/../lw/.git" > "$PGR/.git/worktrees/lw/gitdir"; rm -rf "$PGD/lw"
-pg_says "a gone tree whose absolute gitdir holds lnk/.. is named gone" "is gone" \
-    "$PGR" "$PGD/lnk/../lw" "$PGOLD"
-pg_x fs696 "$PGD/sub/lw"
-pg_says "a forged line naming where lnk/.. leads is no worktree" "not a worktree" \
-    "$PGR" "$PGD/sub/lw" "$PGOLD"
-# #555: --relative-paths writes the gitdir as ../../../../rel/.git, from the entry. git
-# resolves . and .. before it compares with <path>/.git, and so does the fallback, as text.
-PGRR="$PGD/rr"
-if (
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-    git init -q -b main "$PGRR" && git -C "$PGRR" commit -q --allow-empty -m i &&
-        git -C "$PGRR" worktree add -q --relative-paths -b rel555 "$PGD/rel" &&
-        git -C "$PGRR" worktree add -q -b dots555 "$PGD/dots"
-) >/dev/null 2>&1; then
-    rm -rf "$PGD/rel"
-    pg_says "a gone tree whose gitdir is relative is named gone" "is gone" \
-        "$PGRR" "$PGD/rel" "$PGOLD"
-    printf '%s\n' .././../../../x/../dots/.git > "$PGRR/.git/worktrees/dots/gitdir"
-    rm -rf "$PGD/dots"
-    pg_says "a gone tree whose relative gitdir holds . and x/.. is named gone" "is gone" \
-        "$PGRR" "$PGD/dots" "$PGOLD"
-else
-    skip_ "a gone tree whose gitdir is relative: this git has no worktree add --relative-paths"
-fi
-
-# A separate git dir and a submodule's: git lists P/store.git and P/sup/.git/modules/sm.
-(
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-    git init -q -b main --separate-git-dir "$PGD/store.git" "$PGD/wk"
-    git -C "$PGD/wk" commit -q --allow-empty -m i
-    git -C "$PGD/wk" worktree add -q -b l1 "$PGD/l1"
-    git init -q -b main "$PGD/src"; git -C "$PGD/src" commit -q --allow-empty -m s
-    git -C "$PGR" -c protocol.file.allow=always submodule add -q "$PGD/src" sm
-    git -C "$PGR/sm" worktree add -q -b sl "$PGD/sl"
-    git clone -q --bare "$PGD/src" "$PGD/bare.git"
-    git -C "$PGD/bare.git" worktree add -q -b bl "$PGD/bl"
-    for k in junk gitdir dir; do
-        git clone -q --bare "$PGD/src" "$PGD/$k.git"
-        git -C "$PGD/$k.git" worktree add -q -b "b$k" "$PGD/b$k"
-    done
-    # #560: a bare repo whose git dir is <proj>/.git, and core.bare on a normal repo: git
-    # prints <proj> and nb with bare, and neither path is the common dir.
-    git clone -q --bare "$PGD/src" "$PGD/proj/.git"
-    git -C "$PGD/proj" worktree add -q -b pw "$PGD/proj/wa"
-    git init -q -b main "$PGD/nb"; git -C "$PGD/nb" commit -q --allow-empty -m n
-    git -C "$PGD/nb" worktree add -q -b nw "$PGD/nb-wc"
-    git -C "$PGD/nb" config core.bare true
-) >/dev/null 2>&1
-# #560: whatever sits in a bare repo, its record is the git dir: junk, a gitdir: line, a dir.
-echo junk > "$PGD/junk.git/.git"
-printf 'gitdir: %s\n' "$PGD/gitdir.git/worktrees/bgitdir" > "$PGD/gitdir.git/.git"
-mkdir "$PGD/dir.git/.git"
-PGSM=$(git -C "$PGR/sm" rev-parse --path-format=absolute --git-common-dir)
-is "git lists the separate git dir as the main record" "worktree $PGD/store.git" \
-   "$(git -C "$PGD/l1" worktree list --porcelain | head -1)"
-is "and a submodule's git dir" "worktree $PGSM" \
-    "$(git -C "$PGD/sl" worktree list --porcelain | head -1)"
-is "and a bare repo" "worktree $PGD/bare.git" \
-   "$(git -C "$PGD/bl" worktree list --porcelain | head -1)"
-is "and a bare repo in proj/.git as proj, bare" "worktree $PGD/proj bare" \
-   "$(git -C "$PGD/proj/wa" worktree list --porcelain | head -2 | paste -sd' ')"
-is "and a repo set core.bare as itself, bare" "worktree $PGD/nb bare" \
-   "$(git -C "$PGD/nb-wc" worktree list --porcelain | head -2 | paste -sd' ')"
-for v in "" "$PGOLD"; do
-    w=${v:+without -z}; w=${w:-with -z}
-    pg_says "$w, a separate git dir listed as the main checkout is no worktree" \
-        "not a worktree" "$PGD/l1" "$PGD/store.git" "$v"
-    pg_says "$w, a submodule's git dir listed as its main checkout is no worktree" \
-        "not a worktree" "$PGD/sl" "$PGSM" "$v"
-    pg_says "$w, a bare repo listed as its main checkout is no worktree" \
-        "not a worktree" "$PGD/bl" "$PGD/bare.git" "$v"
-    for k in junk gitdir dir; do
-        pg_says "$w, a bare repo holding a .git $k is no worktree" \
-            "not a worktree" "$PGD/b$k" "$PGD/$k.git" "$v"
-    done
-    pg_says "$w, a bare repo in proj/.git, listed as proj, is no worktree" \
-        "not a worktree" "$PGD/proj/wa" "$PGD/proj" "$v"
-    pg_says "$w, a repo set core.bare, listed as its main checkout, is no worktree" \
-        "not a worktree" "$PGD/nb-wc" "$PGD/nb" "$v"
-    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
-    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/proj/wa" "$PGD/proj/wa"
-    bg_waitpath "$PGS" "$PGD/proj/wa"
-    is "$w, a tree linked to a bare repo in proj/.git still opens" "$PGD/proj/wa" \
-       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
-    "$TMUX_REAL" -L "$PGS" select-window -t "$PGO"
-    BG_SHIM=$v bg_goto "$PGS" "$PGO" "$PGD/wk" "$PGD/l1"
-    bg_waitpath "$PGS" "$PGD/l1"
-    is "$w, a tree linked to a separate git dir still opens" "$PGD/l1" \
-       "$("$TMUX_REAL" -L "$PGS" display-message -p -t t: '#{pane_current_path}')"
-done
-
-"$TMUX_REAL" -L "$PGS" kill-server >/dev/null 2>&1
-unset -f pg_ids pg_says pg_x
-rm -rf "$PGR" "$PGM" "$PGD" "$PGOLD"
-fi
 
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
 if need_tmux "branch goto client"; then :; else
@@ -24553,99 +23852,10 @@ unset -f pt_get pt_set pt_take pt_run pt_open
 rm -rf "$PTD"
 fi
 
-echo "== tmux-branch (#470): goto finds a pane by the work dir the board shows =="
-# An agent launched in the main checkout that works in the worktree is a pane of the worktree,
-# as r reviews it. The stub answers the picker once, and `workdir %N` from $BWD/map (one
-# "<pane> <dir>" line each, exit 1 for a pane not in it), or as a stale binary with
-# $BW_ASK=stale, or as the real binary with $BW_ASK=real. Each workdir call is logged.
-if need_tmux "branch goto work dir"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"   # bg_server's fesc
-BWR=$(mktmpd); BWM=$(mktmpd); br_repo "$BWR" "$BWM"
-BWD=$(mktmpd); BWW="$BWD/wt"
-git -C "$BWR" worktree add -q "$BWW" held >/dev/null 2>&1
-: > "$BWD/map"
-BWS="cockpit-bw470-$$"; SOCKS="$SOCKS $BWS"
-bg_server "$BWS" "$BWD"   # the origin pane is in neither tree
-BWO=$("$TMUX_REAL" -L "$BWS" list-panes -a -F '#{pane_id}' | head -1)
-BWA=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
-until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA" '#{pane_current_command}'
-printf '%s %s\n' "$BWA" "$BWW" >> "$BWD/map"
-cat > "$BWD/ct" <<EOF
-#!/bin/sh
-case \$1 in
-    branch) [ -e "$BWD/ran" ] && exit 1; : > "$BWD/ran"; echo "goto \$BW_GOTO"; exit 0 ;;
-    workdir)
-        echo "\$2" >> "$BWD/ask.log"
-        case \$BW_ASK in
-            stale) echo "cockpit-tui: unknown screen workdir" >&2; exit 2 ;;
-            real)  exec "$COCKPIT_TUI_BIN" "\$@" ;;
-        esac
-        d=\$(sed -n "s/^\$2 //p" "$BWD/map"); [ -n "\$d" ] || exit 1; printf '%s\n' "\$d"; exit 0 ;;
-esac
-exec "$COCKPIT_TUI_BIN" "\$@"
-EOF
-chmod +x "$BWD/ct"
-bw_goto() {                   # bw_goto <path> -> "<workdir calls> <active pane> <windows>"
-    rm -f "$BWD/ran"; : > "$BWD/ask.log"
-    "$TMUX_REAL" -L "$BWS" select-window -t "$BWO"
-    local sp; sock_path "$BWS" sp
-    TMUX="$sp,0,0" HOME="$BWD/home" \
-        COCKPIT_TUI_BIN="$BWD/ct" BW_GOTO=$1 timeout 30 "$DIR/scripts/tmux-branch" \
-            -p "$BWO" "$BWR" \
-        </dev/null >/dev/null 2>&1
-    printf '%s %s %s' "$(grep -c . "$BWD/ask.log")" "$(bg_active "$BWS")" "$(bg_windows "$BWS")"
-}
-# Every agent pane whose @cockpit_dir does not hold is asked; a shell pane is not.
-is "goto the worktree selects the agent the binary puts there, asking it once" \
-   "1 $BWA 2" "$(bw_goto "$BWW")"
-BWSH=$(bg_pane "$BWS" "$BWR" 'exec sleep 300')
-is "and goto main skips that agent for a shell in main" "1 $BWSH 3" "$(bw_goto "$BWR")"
-is "a stale binary is asked, and the cwd rules again" "1 $BWA 3" \
-   "$(BW_ASK=stale bw_goto "$BWR")"
-"$TMUX_REAL" -L "$BWS" set -p -t "$BWA" @cockpit_dir "$BWW" >/dev/null 2>&1
-is "with every agent's @cockpit_dir holding, the binary is not asked" "0 $BWSH 3" \
-   "$(bw_goto "$BWR")"
-# A backslash in the binary's answer reaches goto as it is.
-BWB="$BWD/back\\slash"
-git -C "$BWR" worktree add -q "$BWB" old >/dev/null 2>&1
-BWA2=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
-until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA2" '#{pane_current_command}'
-printf '%s %s\n' "$BWA2" "$BWB" >> "$BWD/map"
-is "a path with a backslash finds its agent" "1 $BWA2 4" "$(bw_goto "$BWB")"
-"$TMUX_REAL" -L "$BWS" set -p -t "$BWA2" @cockpit_dir "$BWB" >/dev/null 2>&1
-# End to end with the binary under test: a live Claude renamed to its version, whose
-# transcript works in a third worktree. A binary without workdir leaves its cwd, main.
-BWV="$BWD/ver"
-git -C "$BWR" worktree add -q "$BWV" conf >/dev/null 2>&1
-BWT="$BWD/home/.claude/projects/$(printf '%s' "$BWR" | sed 's/[^A-Za-z0-9-]/-/g')"
-mkdir -p "$BWT"
-printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$BWV" > "$BWT/bw470v.jsonl"
-BWA3=$(bg_pane "$BWS" "$BWR" 'exec -a 2.1.246 sleep 300')
-"$TMUX_REAL" -L "$BWS" set -p -t "$BWA3" @cockpit_session bw470v >/dev/null 2>&1
-until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_current_command}'
-bwrc=0
-sock_path "$BWS" BWSP
-TMUX="$BWSP,0,0" \
-    "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
-if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
-    read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
-    is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
-       "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
-else
-    is "goto finds a pane running as 2.1.246 by its transcript's tree" "1 $BWA3 5" \
-       "$(BW_ASK=real bw_goto "$BWV")"
-fi
-"$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
-unset -f bw_goto
-rm -rf "$BWR" "$BWM" "$BWD"
-fi
-
 echo "== tmux-branch (#228): the binary goes to another worktree itself =="
 # Since #228 the binary runs goto and prints nothing; a gone tree is its ✕ note, the
 # picker kept. The script hands it the origin pane and the pinned client in the
-# environment: a 0.4.0 binary ignores a variable where it refuses a flag. The pick
-# itself is tui/tests/branch_goto.rs; the blocks above drive the old-binary goto.
+# environment. The pick itself is tui/tests/branch_goto.rs.
 if need_tmux "branch goto in the binary"; then :; else
 # shellcheck source=../scripts/lib/fmt.sh
 . "$DIR/scripts/lib/fmt.sh"
@@ -26372,15 +25582,13 @@ BQ="cockpit-bq2-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
     printf 'x filter=a=b\n' > .gitattributes \
   && git config 'filter.a=b.clean' "touch $(tq "$GD/PWNED")" ) >/dev/null 2>&1
 ( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
-  && git -c user.name=t -c user.email=t@t commit -qm i && git branch other &&
-      git worktree add -q "$GD/ok-wt" other ) >/dev/null 2>&1
+  && git -c user.name=t -c user.email=t@t commit -qm i ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$BQ" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" >/dev/null 2>&1
 sock_path "$BQ" BQSOCK
 mkdir "$GD/bin"
 printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$BQ" > "$GD/bin/tmux"
-# A picker stub: records that it ran and answers with the action line in $GD/answer.
-printf '#!/bin/sh\ntouch "%s/picker-ran"\ncat "%s/answer" 2>/dev/null\n' "$GD" "$GD" \
-    > "$GD/bin/cockpit-tui"
+# A picker stub: records that it ran, answers nothing and leaves as an action does.
+printf '#!/bin/sh\ntouch "%s/picker-ran"\n' "$GD" > "$GD/bin/cockpit-tui"
 chmod +x "$GD/bin/tmux" "$GD/bin/cockpit-tui"
 bq() { env PATH="$GD/bin:$PATH" COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" TMUX="$BQSOCK,0,0" \
         "$DIR/scripts/tmux-branch" "$@" </dev/null 2>&1
@@ -26389,21 +25597,13 @@ BQL="cockpit: refusing this repo: a git filter driver name contains '=' (see #33
 command git -C "$GD/r" add -A >/dev/null 2>&1
 is "control: unguarded git add fires the plant" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
 command git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
-printf 'goto %s\n' "$GD/r" > "$GD/answer"
 is "refused repo: the refusal line, not 'not a git repository'" "$BQL" "$(bq "$GD/r" | head -1)"
 is "the picker never started" "" "$(ls "$GD/picker-ran" 2>/dev/null)"
-is "no window was opened" "1" "$("$TMUX_REAL" -L "$BQ" list-windows | grep -c .)"
 is "the plant never ran" "" "$(ls "$GD/PWNED" 2>/dev/null)"
-# Negative: a normal repo reaches the picker and a goto to its worktree is honoured.
-printf 'goto %s\n' "$GD/ok-wt" > "$GD/answer"
+# Negative: a normal repo reaches the picker.
 bq "$GD/ok" >"$GD/ok.out"
 is "normal repo: the picker ran, no refusal" "yes|" \
     "$([ -e "$GD/picker-ran" ] && echo yes)|$(grep -c refusing "$GD/ok.out" | sed 's/^0$//')"
-bq_okwt() { "$TMUX_REAL" -L "$BQ" list-panes -a -F '#{pane_current_path}' | grep -Fx "$GD/ok-wt" |
-        head -1
-}
-until_out "$(printf '%q' "$GD/ok-wt")" bq_okwt
-is "and its worktree got a window" "$GD/ok-wt" "$(bq_okwt)"
 "$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
 fi
 rm -rf "${GD:-/nonexistent-gd}"
@@ -29768,32 +28968,8 @@ gs_empty() {
 }
 is "an empty name is no agent at any site: every clause, 12 of them, says 0" "0:12 " "$(gs_empty)"
 gs kill-server >/dev/null 2>&1
-# goto: tmux-branch's jump to a worktree takes its agent pane over a shell in it. A server of
-# its own, so no other agent pane is in the repo: the origin, a shell in the repo, ./claude.
-GG="cockpit-gg840-$$"; SOCKS="$SOCKS $GG"
-gg() { "$TMUX_REAL" -L "$GG" "$@"; }
-gg -f /dev/null new-session -d -s t -x 120 -y 30 -c "$GSD/o" 'exec sleep 600' >/dev/null 2>&1
-gg set -g @cockpit_agents_glob '|claude|codex|' >/dev/null 2>&1
-GG_O=$(gg display -p -t t: '#{pane_id}')
-GG_S=$(gg new-window -d -P -F '#{pane_id}' -t t: -c "$GSD/r" 'exec sleep 600')
-gs_typed gg ./claude ./claude; GG_A=$GS_P
-sock_path "$GG" GGK
-cat > "$GSD/ct" <<GSCT
-#!/bin/sh
-case \$1 in
-    branch) [ -e "$GSD/ran" ] && exit 1; : > "$GSD/ran"; echo "goto $GSD/r"; exit 0 ;;
-esac
-exec "$COCKPIT_TUI_BIN" "\$@"
-GSCT
-chmod +x "$GSD/ct"
-TMUX="$GGK,0,0" COCKPIT_TUI_BIN="$GSD/ct" timeout 30 "$DIR/scripts/tmux-branch" -p "$GG_O" \
-    "$GSD/r" </dev/null >/dev/null 2>&1
-is "goto to the repo selects the ./claude pane, not the shell beside it" "agent" \
-   "$(case "$(gg display -p -t t: '#{pane_id}')" in "$GG_A") echo agent ;; "$GG_S") echo shell ;;
-       *) echo other ;; esac)"
-gg kill-server >/dev/null 2>&1
-unset -f gs gg gs_typed gs_each gs_poll gs_wd gs_clauses gs_agree gs_empty
-unset GS GSD GSK GS_RE GS_SH GS_P GG GGK GG_O GG_S GG_A GS_RC GS_RX GS_AB GS_PL GS_SL GS_NO
+unset -f gs gs_typed gs_each gs_poll gs_wd gs_clauses gs_agree gs_empty
+unset GS GSD GSK GS_RE GS_SH GS_P GS_RC GS_RX GS_AB GS_PL GS_SL GS_NO
 unset gs_f gs_n
 fi
 
@@ -30323,32 +29499,6 @@ TMUX="$SOCKDIR/$MPJ,0,0" "$DIR/scripts/tmux-jump" "$MPJO" >/dev/null 2>&1
 is "a jump lands on the user's waiting modal pane, never on cockpit's popup" "$MPJU" \
    "$("$TMUX_REAL" -L "$MPJ" display -p -t t: '#{pane_id}')"
 "$TMUX_REAL" -L "$MPJ" kill-server >/dev/null 2>&1
-fi
-
-echo "== tmux-branch: goto never picks cockpit's own popup, a user's modal pane it does (#1248) =="
-if need_tmux "branch goto popup"; then :; else
-# shellcheck source=../scripts/lib/fmt.sh
-. "$DIR/scripts/lib/fmt.sh"   # bg_server's fesc
-MPBR=$(mktmpd); MPBM=$(mktmpd); br_repo "$MPBR" "$MPBM"
-MPBD=$(mktmpd); MPBW="$MPBD/wt"
-git -C "$MPBR" worktree add -q "$MPBW" held >/dev/null 2>&1
-MPB="cockpit-mpb-$$"; SOCKS="$SOCKS $MPB"
-bg_server "$MPB" "$MPBD"   # the origin pane is in neither tree
-MPBO=$("$TMUX_REAL" -L "$MPB" list-panes -a -F '#{pane_id}' | head -1)
-MPBP=$(mp_modal "$MPB" "$MPBD" "$MPBW" 'COCKPIT_POPUP=1 exec sleep 300')
-until_out "$MPBW" "$TMUX_REAL" -L "$MPB" display -p -t "$MPBP" '#{pane_current_path}'
-"$TMUX_REAL" -L "$MPB" select-window -t "$MPBO"
-bg_goto "$MPB" "$MPBO" "$MPBR" "$MPBW"
-is "with only cockpit's popup in the tree, goto opens a window there" "3 no" \
-   "$(bg_windows "$MPB") $([ "$(bg_active "$MPB")" = "$MPBP" ] && echo yes || echo no)"
-"$TMUX_REAL" -L "$MPB" kill-window -t "$(bg_active "$MPB")" >/dev/null 2>&1
-MPBU=$(mp_modal "$MPB" "$MPBD" "$MPBW" 'exec sleep 300')
-until_out "$MPBW" "$TMUX_REAL" -L "$MPB" display -p -t "$MPBU" '#{pane_current_path}'
-"$TMUX_REAL" -L "$MPB" select-window -t "$MPBO"
-bg_goto "$MPB" "$MPBO" "$MPBR" "$MPBW"
-is "a user's modal pane in the tree is the one goto selects" "$MPBU" "$(bg_active "$MPB")"
-"$TMUX_REAL" -L "$MPB" kill-server >/dev/null 2>&1
-rm -rf "$MPBR" "$MPBM" "$MPBD"
 fi
 
 echo "== display-popup hands its command's exit status back to the tmux that ran it (#1248) =="

@@ -2,7 +2,7 @@
 # Sourced, never run. The required cockpit-tui (#199): where it is, how old it
 # may be. Builtins only, like vnum.sh: install.sh's fail rows use it.
 
-TUI_MIN=0.4.0
+TUI_MIN=0.5.0
 # shellcheck disable=SC2034  # read by tui-fetch: the release it installs is the floor
 TUI_TAG=cockpit-tui-v$TUI_MIN
 # Absolute or the plugin's own: a bare name is relative to whatever cwd the

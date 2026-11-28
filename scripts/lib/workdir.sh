@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sourced, never run. Bash 4+. The tree a pane works in (#470): the dir the
-# board's row shows, so prefix r, the board's r and tmux-branch's goto name the
+# board's row shows, so prefix r, the board's r and the branch popup name the
 # same one. cockpit-tui owns the rule (`cockpit-tui workdir %N`, the board's
 # Pane.dir, data::workdir::choose: a declared @cockpit_dir, else the git tree the
 # agent's tool calls reached in the last 600 s (#462), else the hooks' cwd or the
@@ -58,14 +58,6 @@ unset _wd
 workdir_agent() {             # <glob 1|0> <@panestate> <pane_current_command>
     if [ "$1" = 1 ] || [ -n "$2" ]; then return 0; fi
     version_cmd "$3"
-}
-
-# tmux-branch's goto walk, which serves only a binary older than its own branch
-# screen (no active-in): ask for an agent pane whose @cockpit_dir does not hold, as
-# such a binary picks a holding one first. Every other pane forks nothing: goto walks
-# every shell pane, and a call each costs more than the walk.
-workdir_need() {              # <agent 1|0> <@cockpit_dir>
-    [ "$1" = 1 ] && ! workdir_ok "$2"
 }
 
 # One WORKDIR_FMT row into WD_ID, WD_AGENT (1|0), WD_OPT and WD_CWD.

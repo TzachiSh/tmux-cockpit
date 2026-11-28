@@ -50,9 +50,9 @@ fi
 CLIENT=""
 [ -n "${TMUX:-}" ] && CLIENT=$(take_pane_opt "$PANE_ID" @cockpit_branch_client)
 
-# The switch lands in the repo the picker listed, the pane's own: a popup
-# inherits tmux's environment, where a dotfiles setup's GIT_DIR would point it
-# at another. git-env.sh strips what the picker's gitsafe strips (#730).
+# The script's git reads look at the pane's own repo: a popup inherits tmux's
+# environment, where a dotfiles setup's GIT_DIR would point them at another.
+# git-env.sh strips what the picker's gitsafe strips (#730).
 # shellcheck source=lib/git-env.sh
 . "${d%/*}/lib/git-env.sh" || exit 1
 # shellcheck source=lib/git.sh
@@ -92,247 +92,19 @@ cd "$DIR" 2>/dev/null || fail "cockpit: no such directory: $DIR"
 [ "$PANE_CMD" = ssh ] && fail "cockpit: this pane is inside ssh · $DIR is local, not that host"
 
 # git() refuses a repo whose config names a filter driver with '=', and the rev-parse
-# below would then read as "not a git repository" (#330). One line, before any git read
-# (the picker, wt_list's two rereads, the switches).
+# below would then read as "not a git repository" (#330). One line, before any git read.
 if git_refused .; then fail "$GIT_REFUSAL"; fi
 
 git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: $DIR"
 
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
-# The old-binary path: this switch, track, create and goto (and their checks in act)
-# serve a cockpit-tui that still prints action lines (0.4.0, the release at the time).
-# They go once TUI_MIN is raised to the first release whose branch screen acts itself
-# (#228, #1271), and with them the fmt.sh load only goto uses (workdir.sh also picks DIR).
-current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
-
-# Failures are common (dirty tree, branch held by a worktree); git's own message
-# names the cause, so show it verbatim.
-switch_to() {
-    local target=$1 out
-    if [ "$target" = "$current" ]; then
-        printf 'already on %s\n' "$target"; redraw; sleep 0.4; return 0
-    fi
-    if out=$(git switch "$target" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
-switch_remote() {  # origin/foo -> local foo tracking it
-    local ref=$1 out
-    if out=$(git switch --track "$ref" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
-create() {
-    local name=$1 out
-    # Return, not exit: the caller loops back into the picker.
-    if ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
-        printf 'invalid branch name: %s\n' "$name" >&2; pause; return 1
-    fi
-    if out=$(git switch -c "$name" 2>&1); then
-        printf '%s\n' "$out"; redraw; sleep 0.6; return 0
-    fi
-    printf '%s\n' "$out" >&2; pause; return 1
-}
-
-# A pane's directory belongs to the deepest worktree that contains it, so a pane
-# in a worktree nested under the checkout is not a pane of the checkout.
-owner_of() {                  # <dir>  sets OWNER to the worktree path holding it, or ""
-    local w
-    OWNER=
-    for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
-        if [ "$1" = "$w" ] || [[ $1 == "$w"/* ]]; then
-            [ ${#w} -gt ${#OWNER} ] && OWNER=$w
-        fi
-    done
-}
-
-# WORKTREES: every worktree path. -z keeps a path with a newline in one record but needs
-# git 2.36; older git rejects it and prints nothing, so the plain porcelain is read, and
-# a record with a line that is no worktree attribute (a path cut by a newline) is dropped.
-# So is one that is not this repo's (#348, #532): a newline name can forge a whole
-# `worktree <dir>` line, and <dir> may be any checkout. The main checkout's .git is the
-# common dir; a linked tree's .git file names a dir in its worktrees/ whose gitdir file
-# names that .git back. Each file is read whole, as git reads it. -ef compares inodes, so
-# a symlinked, hard-linked or relative path matches, as it does for git, and nothing
-# forks. A path that is gone is kept only as git would call it prunable, so goto still
-# says "is gone" of a deleted tree and refuses a forged one (#537).
-wt_ours() {                   # <path> <common-dir>  true for a tree of the repo at <common-dir>
-    local g='' b=''
-    [ -e "$1" ] || { wt_prunable "$1" "$2"; return; }
-    [ -d "$1/.git" ] && { [ "$1/.git" -ef "$2" ]; return; }
-    [ -f "$1/.git" ] || return 1
-    IFS= read -r g 2>/dev/null < "$1/.git"
-    [[ $g == "gitdir: "?* ]] || return 1
-    g=${g#gitdir: }; [[ $g == /* ]] || g=$1/$g
-    [ "$g/.." -ef "$2/worktrees" ] && [ -f "$g/gitdir" ] || return 1
-    IFS= read -r b 2>/dev/null < "$g/gitdir"
-    [ -n "$b" ] || return 1
-    [[ $b == /* ]] || b=$g/$b
-    [ "$b" -ef "$1/.git" ]
-}
-# Some <common>/worktrees/*/gitdir names <path>/.git, as git decides a gone tree is
-# prunable. Each file is read whole, trailing newlines off, and a relative one is taken
-# from its entry. A text compare: -ef needs both paths to exist, and this one does not.
-# So . and .. are resolved as text on both sides first (#555): --relative-paths writes
-# ../../../../<tree>/.git, and git lists an absolute gitdir as written, x/.. and all
-# (#584). As text, not through the filesystem: git resolves a relative gitdir with
-# realpath, so a symlink before a .. (only a hand-edited file holds one) makes git list
-# a path this compare does not find, and goto says "not a worktree" of that gone tree.
-wt_prunable() {               # <path> <common-dir>
-    local f b want
-    wt_norm "$1/.git"; want=$REPLY
-    for f in "$2"/worktrees/*/gitdir "$2"/worktrees/.[!.]*/gitdir "$2"/worktrees/..?*/gitdir; do
-        b=''
-        IFS= read -r -d '' b 2>/dev/null < "$f"
-        b=${b%"${b##*[!$'\n\r']}"}
-        [ -n "$b" ] || continue
-        [[ $b == /* ]] || b=${f%/gitdir}/$b
-        wt_norm "$b"
-        [ "$REPLY" = "$want" ] && return 0
-    done
-    return 1
-}
-# An absolute path with . and empty parts dropped and .. taking off the part before it,
-# as text, so a path that is gone resolves too (no realpath). /.. is /, as for git. A
-# symlink is a name like any other: link/.. drops it. The input must be absolute: a
-# relative one comes back rooted at /, not at the cwd (a/b is /a/b, ../x is /x), where
-# Rust's lexical keeps it relative.
-wt_norm() {                   # <absolute-path>  -> REPLY
-    local s=$1/ c
-    REPLY=''
-    while [ -n "$s" ]; do
-        c=${s%%/*}; s=${s#*/}
-        case $c in
-            '' | .) ;;
-            ..) REPLY=${REPLY%/*} ;;
-            *) REPLY=$REPLY/$c ;;
-        esac
-    done
-    REPLY=${REPLY:-/}
-}
-wt_list() {
-    # git's attribute lines: a label is a whole line, locked and prunable may add a reason
-    local attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
-    local rec line top common cur='' ok=1 z=0 bare=0
-    WORKTREES=()
-    # Asked from the top: before 2.13 the answer was the cwd's prefix plus a path from the top.
-    top=$(git rev-parse --show-toplevel 2>/dev/null); top=${top:-$PWD}
-    common=$(git -C "$top" rev-parse --git-common-dir 2>/dev/null)
-    [ -n "$common" ] || return 0
-    [[ $common == /* ]] || common=$top/$common
-    # git's main record is no tree when it is the common git dir (a separate git dir, a
-    # submodule's, a bare repo's) or carries bare (a bare repo in <proj>/.git, listed as
-    # <proj>, or core.bare on a normal repo): dropped, whatever sits in it (#537, #560). A
-    # main checkout or a linked tree is neither, wherever git lists it. The fallback drops a
-    # bare record, and wt_ours a git dir.
-    while IFS= read -r -d '' rec; do
-        if [[ $rec == "worktree "* ]]; then
-            [ -n "$cur" ] && [ "$bare" = 0 ] && ! [ "$cur" -ef "$common" ] && WORKTREES+=("$cur")
-            cur=${rec#worktree }; bare=0; z=1
-        elif [ "$rec" = bare ]; then
-            bare=1
-        fi
-    done < <(git worktree list --porcelain -z 2>/dev/null)
-    [ -n "$cur" ] && [ "$bare" = 0 ] && ! [ "$cur" -ef "$common" ] && WORKTREES+=("$cur")
-    [ "$z" = 1 ] && return 0
-    while IFS= read -r line || [ -n "$line" ]; do
-        if [[ $line == "worktree "* ]]; then
-            [ -n "$cur" ] && [ "$ok" = 1 ] && [ "$bare" = 0 ] && wt_ours "$cur" "$common" &&
-                WORKTREES+=("$cur")
-            cur=${line#worktree }; ok=1; bare=0
-        elif [ "$line" = bare ]; then
-            bare=1
-        elif [ -n "$line" ] && [[ ! $line =~ $attr ]]; then
-            ok=0
-        fi
-    done < <(git worktree list --porcelain 2>/dev/null)
-    [ -n "$cur" ] && [ "$ok" = 1 ] && [ "$bare" = 0 ] && wt_ours "$cur" "$common" &&
-        WORKTREES+=("$cur")
-    return 0
-}
-
-# Jump to the worktree that holds a branch (#303): the agent pane in it if there is
-# one, any pane in it, else a new window there. Never a cd of an existing pane.
-# The path comes off cockpit-tui's line, so it is checked against git's own list.
-goto() {
-    local path=$1 w id row dir ag='' sh='' found='' t=()
-    wt_list
-    for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do [ "$w" = "$path" ] && found=1; done
-    if [ -z "$found" ]; then
-        printf 'cockpit: not a worktree of this repository: %s\n' "$path" >&2; pause; return 1
-    fi
-    if [ ! -d "$path" ]; then
-        printf 'cockpit: %s is gone · git worktree prune\n' "$path" >&2; pause; return 1
-    fi
-    # One tree per pane, the one tmux-review reviews (#470): the binary is asked
-    # for each pane whose answer could differ from the rule without it.
-    # -f: cockpit's own popup is a pane on tmux next-3.9 and never one to go to (#1248)
-    while IFS= read -r row; do
-        workdir_row "$row"
-        [[ $WD_ID =~ ^%[0-9]+$ ]] || continue
-        dir=''
-        workdir_need "$WD_AGENT" "$WD_OPT" && dir=$(workdir_ask "$WD_ID")
-        workdir_pick "$dir" "$WD_OPT" "$WD_CWD"
-        owner_of "$WORKDIR"
-        [ "$OWNER" = "$path" ] || continue
-        if [ "$WD_AGENT" = 1 ]; then ag=${ag:-$WD_ID}; else sh=${sh:-$WD_ID}; fi
-    done < <(tmux list-panes -a -f "$COCKPIT_NOT_POPUP" -F "$WORKDIR_FMT" 2>/dev/null)
-    id=${ag:-$sh}
-    if [ -n "$id" ]; then
-        # switch-client fails without a client; the selection below still applies.
-        # Bare, tmux would move the most recently active client (#360).
-        tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$id" 2>/dev/null || true
-        tmux select-window -t "$id" 2>/dev/null
-        tmux select-pane   -t "$id" 2>/dev/null
-        return 0
-    fi
-    # new-window -t takes a window, not a pane: beside the one the popup came from
-    if [[ $PANE_ID =~ ^%[0-9]+$ ]]; then
-        id=$(tmux display-message -p -t "$PANE_ID" '#{window_id}' 2>/dev/null)
-        [[ $id =~ ^@[0-9]+$ ]] && t=(-a -t "$id")
-    fi
-    w=$(fesc "$path")   # -c is expanded as a format
-    if tmux new-window "${t[@]}" -c "$w" 2>/dev/null; then return 0; fi
-    printf 'cockpit: could not open a window in %s\n' "$path" >&2; pause; return 1
-}
-
-# cockpit-tui draws the picker. Since #228 it runs every action itself, goto included,
-# and prints nothing after one ran; an action line comes from an older binary. This
-# script reads one as untrusted text: a fixed verb, one line, a name git accepts and a
-# ref that exists, or a path git lists.
-act() {
-    local line=$1 verb arg ns
-    [ -n "$line" ] || { redraw; return 0; }
-    verb=${line%% *}; arg=${line#* }
-    case "$verb" in
-        switch) ns=heads ;;
-        track)  ns=remotes ;;
-        create) ns= ;;
-        goto)   goto "$arg"; return ;;
-        *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\ncockpit: %s\n' \
-                    "$line" "$TUI_STALE_MSG" >&2; pause; return 1 ;;
-    esac
-    if [ "$line" = "$verb" ] || [ -z "$arg" ] || [[ $line == *$'\n'* ]] \
-       || ! git check-ref-format --branch "$arg" >/dev/null 2>&1; then
-        printf 'cockpit: not a branch name: %s\n' "$arg" >&2; pause; return 1
-    fi
-    case "$verb" in
-        create) create "$arg" ;;
-        *)
-            git show-ref --quiet --verify "refs/$ns/$arg" \
-                || { printf 'cockpit: no such branch: %s\n' "$arg" >&2; pause; return 1; }
-            if [ "$verb" = switch ]; then switch_to "$arg"; else switch_remote "$arg"; fi ;;
-    esac
-}
-
+# cockpit-tui draws the picker and runs every action itself, goto included (#228): a refusal
+# is a note on its screen, and it prints nothing once an action ran. A line on stdout comes
+# from a binary older than the plugin, and nothing here acts on it (#1271).
 [ -x "$COCKPIT_TUI_BIN" ] || fail "cockpit: cockpit-tui is missing ($COCKPIT_TUI_BIN) · run scripts/tui-fetch"
 
-# One stderr capture for the whole loop, removed on any exit, taken only when mktemp's answer
+# One stderr capture for the picker, removed on any exit, taken only when mktemp's answer
 # is a new, empty file of the user's (#1322). Without one the picker runs as before, a stale
 # binary is just "exited", and a message says why: the picker's alternate screen would cover
 # a line on stderr, and the popup closes with the picker.
@@ -347,23 +119,20 @@ fi
 # The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
 [ -z "$glyphs" ] || export COCKPIT_GLYPHS="$glyphs"
-# goto's origin pane and pinned client, in the environment: a 0.4.0 binary exits 2 on
-# a flag it does not know, and ignores a variable. Set here, so none is inherited.
+# goto's origin pane and pinned client, in the environment. Set here, so none is inherited.
 export COCKPIT_BRANCH_PANE="$PANE_ID" COCKPIT_BRANCH_CLIENT="$CLIENT"
-# A failed action returns to the picker; esc leaves.
-while :; do
-    if [ -n "$err" ]; then
-        : > "$err"
-        pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD" 2>"$err"); rc=$?
-        [ ! -s "$err" ] || cat "$err" >&2
-        ! tui_stale "$rc" "$err" || fail "cockpit: $TUI_STALE_MSG"
-    else
-        pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD"); rc=$?
-    fi
-    case "$rc" in
-        0) ;;
-        1) exit 0 ;;
-        *) pause; exit 1 ;;
-    esac
-    act "$pick" && exit 0
-done
+if [ -n "$err" ]; then
+    pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD" 2>"$err"); rc=$?
+    [ ! -s "$err" ] || cat "$err" >&2
+    ! tui_stale "$rc" "$err" || fail "cockpit: $TUI_STALE_MSG"
+else
+    pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD"); rc=$?
+fi
+case "$rc" in
+    0) ;;
+    1) exit 0 ;;
+    *) pause; exit 1 ;;
+esac
+[ -z "$pick" ] \
+    || fail "cockpit: unexpected answer from cockpit-tui: $pick"$'\n'"cockpit: $TUI_STALE_MSG"
+redraw

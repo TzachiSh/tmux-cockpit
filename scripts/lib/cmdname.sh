@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sourced, never run. Builtins only, bash 3.2 safe: agent-poll loads it and calls
-# it once per pane on every tick, and workdir.sh once per pane on a goto walk.
+# it once per pane on every tick, and workdir.sh once for the pane it reads.
 
 # A command name as the agent tests read it: the last path part, without its
 # leading dashes. Sets CMD_BASE, so a loop over panes forks nothing. The shell

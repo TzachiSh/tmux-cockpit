@@ -1,7 +1,7 @@
 //! The popup's own switch (#228) with a git variable inherited. A dotfiles setup can
 //! export GIT_DIR into tmux's environment, and the popup inherits it: the switch must
-//! land in the repo the picker listed, as `scripts/tmux-branch` made sure through
-//! git-env.sh. The one test of this binary writes the environment, under the lock.
+//! land in the repo the picker listed. The one test of this binary writes the
+//! environment, under the lock.
 mod fake;
 
 use cockpit_tui::{branch, data::branches};
