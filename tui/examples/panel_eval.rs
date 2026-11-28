@@ -4032,6 +4032,15 @@ mod tests {
     /// The `--- agent` lines of [`EXPLAIN`].
     const AGENT_LINES: &str = "state: needs-input\nmodel: zm-model\ndoing: zd-doing\nasked: za-asked\n";
 
+    /// A made-up what-changed list (#1613), an item of each kind as the panel draws it.
+    const CHANGE_LINES: &str = "0a1b2c3d4e5f zt-fix the total\nPR #12 zt-retry the upload\n\
+                                issue #7 zt-crash on save\nCI run 99 zt-tests failed\n";
+
+    /// [`EXPLAIN`] with `lines` as its `--- changes` section.
+    fn with_changes(lines: &str) -> String {
+        EXPLAIN.replace("--- request", &format!("--- changes\n{lines}--- request"))
+    }
+
     #[test]
     fn reads_an_explain_case() {
         pinned_config();
@@ -4101,6 +4110,36 @@ mod tests {
         for state in ["needs-input", "error", "running", "done"] {
             assert!(parse_cases(&agent(&format!("state: {state}\n"))).is_ok(), "{state}");
         }
+    }
+
+    /// #1613: a `--- changes` line is an item as the panel draws it, cited as the
+    /// collector's own are, with a title. The section is for Explain cases, once, and
+    /// an empty one is a list that landed with nothing in it.
+    #[test]
+    fn refuses_a_bad_changes_section_and_one_on_a_write_case() {
+        assert!(parse_cases(&with_changes(CHANGE_LINES)).is_ok());
+        assert!(parse_cases(&with_changes("")).is_ok());
+        let rule = "a changes line is a 12-digit sha, PR #N, issue #N or CI run N, then a title";
+        let bad = [
+            "0a1b2c3 zt-short",
+            "0A1B2C3D4E5F zt-upper",
+            "0a1b2c3d4e5f",
+            "PR #12",
+            "PR #x zt",
+            "PR #012 zt",
+            "pr #12 zt",
+            "issue 7 zt",
+            "CI run 0 zt",
+            "zz-word zt",
+        ];
+        for line in bad {
+            let e = parse_cases(&with_changes(&format!("{line}\n"))).unwrap_err();
+            assert_eq!(e, format!("case xp-menu: {rule} (got {line})"));
+        }
+        let twice = with_changes(CHANGE_LINES).replace("--- request", "--- changes\nPR #3 zt\n--- request");
+        assert_eq!(parse_cases(&twice).unwrap_err(), "case xp-menu: changes given twice");
+        let write = ONE.replace("--- request", "--- changes\nPR #3 zt\n--- request");
+        assert_eq!(parse_cases(&write).unwrap_err(), "case crash: changes is for explain cases");
     }
 
     /// The rig sends what the panel's own Explain sends: its prompt, the envelope with
@@ -5523,7 +5562,7 @@ mod tests {
 
     /// Each row: a parse error in the second of two made-up held-out cases, as
     /// the line it is on, the rule it breaks, and the text replaced to break it.
-    fn quiet_rows() -> [(usize, &'static str, &'static str, &'static str); 8] {
+    fn quiet_rows() -> [(usize, &'static str, &'static str, &'static str); 9] {
         let req = "--- request\n";
         [
             (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
@@ -5543,6 +5582,12 @@ mod tests {
                 "refs are path, path:a or path:a-b lines",
                 req,
                 "--- refs\nMADE-UP:x-y\n--- request\n",
+            ),
+            (
+                23,
+                "changes are sha, PR #N, issue #N or CI run N lines with a title",
+                req,
+                "--- changes\nMADE-UP\n--- request\n",
             ),
         ]
     }
@@ -8452,6 +8497,105 @@ esac
             let want = "\nmermaid         none 20% (1/5)  drawn 20% (1/5)  dropped 40% (2/5)  not_drawn 20% (1/5)\n";
             assert!(out.contains(want), "{out}");
             assert_eq!(row_by_id(&rows, "xp-mm3")["mermaid"], json!("not_drawn"), "{rows}");
+        }
+
+        // ------------------------------------------- #1613: whether an answer cites the list
+
+        /// Made-up Explain cases listing [`CHANGE_LINES`], one tune and one held out.
+        fn changed() -> String {
+            let case = |id: &str, held: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\n{held}--- changes\n{CHANGE_LINES}--- request\nwhat changed\n"
+                )
+            };
+            format!("{}{}", case("xp-ch-tune", ""), case("xp-ch-held", "holdout: yes\n"))
+        }
+
+        /// Stand-in answers to a case listing [`CHANGE_LINES`], each with the word its
+        /// row wants. A sha of 7 to 11 digits is the listed one when that starts with
+        /// it, a longer one when it starts with the listed one; a `#N` is a listed PR
+        /// or issue; the `<prompt>` counts; a number, an uppercase or digit-free hex
+        /// word, a run id and a `#` before a letter cite nothing.
+        fn grounding_replies() -> [(&'static str, &'static str); 11] {
+            [
+                ("none", "It waits."),
+                ("none", "Nothing defaced: 1234567 rows, 0A1B2C3, CI run 99, #x and #7a."),
+                ("grounded", "Fixed in `0a1b2c3` by PR #12; see #7."),
+                ("grounded", "0a1b2c3d4e5 and 0a1b2c3d4e5f landed."),
+                ("grounded", "Commit 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b landed."),
+                ("ungrounded", "Fixed in 0a1b2c4."),
+                ("ungrounded", "Commit 0a1b2c3d4e5e6a7b landed."),
+                ("ungrounded", "See #13."),
+                ("ungrounded", "See issue #99 and 0a1b2c3."),
+                ("ungrounded", "CI run 99 is red: #99."),
+                ("ungrounded", "It waits.\n<prompt>Revert 9abcdef0.</prompt>"),
+            ]
+        }
+
+        /// #1613: an Explain row whose case lists what changed says whether its answer
+        /// cites only listed items; an Explain row without a list and a write row have
+        /// no such field, so they stay as they were.
+        #[test]
+        fn an_explain_row_with_changes_says_whether_its_citations_are_listed() {
+            let cases = parse_cases(&changed()).unwrap();
+            for (want, reply) in grounding_replies() {
+                let row = row_of(&ended(&cases, "xp-ch-tune", reply));
+                assert_eq!(row["grounding"], json!(want), "{reply:?}: {row}");
+            }
+            let plain = parse_cases(EXPLAIN_QUIET).unwrap();
+            let row = row_of(&ended(&plain, "xp-tune", "Fixed in 0a1b2c4."));
+            assert_eq!(row.get("grounding"), None, "{row}");
+            let write = parse_cases(ONE).unwrap();
+            let row = row_of(&ended(&write, "crash", "Fixed in 0a1b2c4."));
+            assert_eq!(row.get("grounding"), None, "{row}");
+        }
+
+        /// #1613: a held-out row keeps `grounding`, the tune row's word, which holds no
+        /// case text: every Explain case is held out.
+        #[test]
+        fn a_held_out_explain_row_keeps_grounding() {
+            let cases = parse_cases(&changed()).unwrap();
+            for (_, reply) in grounding_replies() {
+                let tune = row_of(&ended(&cases, "xp-ch-tune", reply));
+                let held = row_of(&ended(&cases, "xp-ch-held", reply));
+                assert!(held["grounding"].is_string(), "{reply:?}: {held}");
+                assert_eq!(held["grounding"], tune["grounding"], "{reply:?}: {held}");
+            }
+        }
+
+        /// A stand-in claude whose Explain answer turns on its request's word.
+        const GROUNDING_CLAUDE: &str = r#"#!/bin/sh
+[ "$1" = --version ] && { echo 9.9.9; exit 0; }
+case "$(cat)" in
+*zg-cite*) printf 'Fixed in 0a1b2c3 by PR #12.\n' ;;
+*zg-made*) printf 'Fixed in 0a1b2c4 by PR #13.\n' ;;
+*) printf 'It waits.\n' ;;
+esac
+"#;
+
+        /// #1613: a run's summary gives each value's share of the answers whose case
+        /// lists what changed; an Explain case with no list is not counted.
+        #[test]
+        fn a_run_summary_counts_each_grounding_value() {
+            let case = |id: &str, word: &str, list: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\nholdout: yes\n{list}--- request\nwhat changed {word}\n"
+                )
+            };
+            let list = format!("--- changes\n{CHANGE_LINES}");
+            let words = ["zg-none", "zg-cite", "zg-made", "zg-made"];
+            let listed: String = words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| case(&format!("xp-gr{i}"), w, &list))
+                .collect();
+            let cases = format!("{listed}{}", case("xp-gr-plain", "zg-cite", ""));
+            let (code, out, err, _) = rig_run_with("xp-grounding", &cases, GROUNDING_CLAUDE, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let want = "\ngrounding       none 25% (1/4)  grounded 25% (1/4)  ungrounded 50% (2/4)\n";
+            assert!(out.contains(want), "{out}");
         }
     }
 
