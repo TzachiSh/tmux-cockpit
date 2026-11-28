@@ -44,6 +44,21 @@ impl Looks {
         }
     }
 
+    /// [`Looks::new`] with its first collect in: `list`, as if the collector had
+    /// landed it at its own time now. The panel eval carries a case's canned list
+    /// this way (#1613). No collect starts until an answer drew it.
+    pub fn landed(c: Collector, list: Changes) -> Looks {
+        let at = c.now();
+        let mut l = Looks::new(c);
+        l.cur = Some(Look {
+            rx: None,
+            until: Instant::now(),
+            got: Some((list, at)),
+            done: false,
+        });
+        l
+    }
+
     /// Starts a collect for the repo `dir` is in, unless one is under way or
     /// its list is not yet seen: a cancelled or failed Explain keeps its list.
     /// A thread that ended with no list is started again.

@@ -370,7 +370,13 @@ case, row and line is as it was. An Explain case may give a `--- agent` section
 of `state:`, `model:`, `doing:` and `asked:` lines, each at most once, the state
 a word the board writes (`needs-input`, `error`, `running` or `done`); they are
 the board's facts the `<agent>` part sends, so the section needs a Claude Code
-window. Explain sends no repo, refs, earlier rounds or output type, so an
+window. An Explain case may also give a `--- changes` section, the what-changed
+list (#1613), one item a line as the panel draws it: a commit's 12-digit sha,
+`PR #N`, `issue #N` or `CI run N`, then a title, each cited as the collector's
+own items must be. The App carries the list as if the collector had landed it,
+a first look, so no collect starts, and Explain sends nothing of it yet. An
+empty section is a list that landed with nothing in it. A write case refuses the
+section. Explain sends no repo, refs, earlier rounds or output type, so an
 Explain case refuses `out`, `out_is`, `explore`, `--- repo`, `--- refs` and
 `--- conversation`, and a write case refuses the keys below. The reply is read
 by Explain's parser, as the panel reads it: a question, or an answer with any
@@ -387,7 +393,15 @@ whether the answer's flow draws (#1570): `none` with no fence tagged `mermaid`,
 what its drawing leaves out, else `drawn`. A held-out row keeps all of them but
 `lead_missing`, which it counts in `lead_missing_n`. The summary's `mermaid`
 line gives each value's share of the Explain answers. It is a measure: no case
-passes or fails by it. `--check` adds `; N explain` to
+passes or fails by it. A row whose case gives a `--- changes` section adds
+`grounding` (#1613): `none` when the answer and its `<prompt>` cite no sha and no
+`#N`, `grounded` when each one is in the list, else `ungrounded`. A sha is a word
+of 7 to 40 lowercase hex digits with a digit and a letter in it. One of 7 to 11
+digits is a listed commit's when that commit's sha starts with it, a longer one
+when it starts with that sha, and a `#N` is a listed PR's or issue's alike. A sha
+the list lacks counts as ungrounded even when the screen shows it. A held-out row
+keeps `grounding`, and the summary's `grounding` line gives each value's share of
+those answers. It is a measure too. `--check` adds `; N explain` to
 its count line when there is one. `--judge` and `--router-prompt` refuse a run
 with an Explain case before any call: the judge's rubric grades write replies,
 and the router text replaces the write prompt. The Explain cases are

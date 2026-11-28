@@ -180,7 +180,7 @@ impl Changes {
 }
 
 /// A short sha, `#N` or a run id, as `kind` needs.
-fn cited(kind: Kind, cite: &str) -> bool {
+pub fn cited(kind: Kind, cite: &str) -> bool {
     let all_digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
     let digits = |s: &str, max: usize| (1..=max).contains(&s.len()) && all_digits(s);
     match kind {
