@@ -1714,11 +1714,19 @@ ms() {                        # <pane> <args...> -> "<rc>|<stderr>", stdout in $
         timeout 20 "$COCKPIT_TUI_BIN" msg "${@:2}" </dev/null 2>&1 >"$MS/o"); rc=$?
     printf '%s|%s' "$rc" "$e"
 }
+msday0=$(date -u +%F)
 ms1=$(ms "$MSA" send --session "$MSHA" "$MSHB" sum body); msid1=$(cat "$MS/o")
 ms2=$(ms "$MSA" send --session "$MSHA" "$MSHB" sum body); msid2=$(cat "$MS/o")
+msday1=$(date -u +%F)
 msnew=$([ "$msid1" != "$msid2" ] && printf '%s' "$msid1$msid2" | grep -cE '^[0-9a-f]{64}$')
 is "msg send from a pane that publishes its session prints a new 32-hex msg_id each time" \
     "0||0||1" "$ms1|$ms2|$msnew"
+# The clock the binary reads: the envelope's day is the UTC day before or after the sends.
+msenv="$MS/state/tmux-cockpit/msg/$MSHB/$msid1.json"
+msts=$(cat "$msenv" 2>/dev/null); msts=${msts#*'"timestamp":"'}; msts=${msts:0:10}
+case $msts in "$msday0" | "$msday1") msts=today ;; esac
+is "msg send stores an envelope of mode 600 stamped with today's UTC date" "600|today" \
+    "$(stat -c '%a' "$msenv" 2>/dev/null || stat -f '%Lp' "$msenv" 2>/dev/null)|$msts"
 is "msg send refuses a --session that is not its pane's" \
     "1|cockpit-tui: msg: session $MSHB is not the session of pane $MSA" \
     "$(ms "$MSA" send --session "$MSHB" "$MSHA" sum body)"
