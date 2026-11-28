@@ -164,8 +164,8 @@ fn a_status_only_on_its_own_line_after_a_step_sets_glyph_and_time() {
     use Status::*;
     let want = [
         (Some(Done), Some("09:02")),
-        (Some(Done), Some("09:20")),
-        (Some(Done), Some("09:41")),
+        (Some(Claimed), Some("09:20")),
+        (Some(Claimed), Some("09:41")),
         (Some(Running), Some("09:44")),
         (Some(Needs), None),
     ];
@@ -562,7 +562,7 @@ fn a_cut_label_ends_a_blank_cell_before_the_next_lifeline() {
 #[test]
 fn a_label_right_of_the_last_lifeline_keeps_its_room_to_the_time_column() {
     // No lifeline right of B's at 40: 12 columns from 42 to 53, column 54 blank, the time at 55.
-    let row = format!(" ✓{}│{}│ a self step… 09:00", " ".repeat(13), " ".repeat(24));
+    let row = format!(" ?{}│{}│ a self step… 09:00", " ".repeat(13), " ".repeat(24));
     assert_eq!(flow::render(LAST_SELF, 60, &UNI)[1], row);
 }
 
@@ -1440,7 +1440,7 @@ fn a_wrapped_lead_note_in_the_list_marks_only_its_first_row() {
 fn the_status_key_is_read_in_any_case() {
     for (row, line) in [("Status", "%% Status: done"), ("STATUS", "%% STATUS: ✓ 09:02")] {
         let f = parsed(&format!("sequenceDiagram\nA->>B: x\n{line}\n"));
-        assert_eq!(f.steps[0].status, Some(Status::Done), "{row}");
+        assert_eq!(f.steps[0].status, Some(Status::Claimed), "{row}");
     }
     assert!(flow::parse("sequenceDiagram\nA->>B: x\n%% Status: maybe\n").is_err());
 }

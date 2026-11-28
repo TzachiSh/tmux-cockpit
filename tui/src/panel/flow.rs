@@ -9,8 +9,10 @@
 //! `autonumber off`, `Note left of`,
 //! `right of` and `over` (the ladder draws a note where its place says, the
 //! list under its step), and a
-//! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM]` line
-//! after a step. `loop`, `alt`, `opt`, `par` (and `par_over`), `critical` and
+//! `%% status: <✓|●|○|✗|!|done|running|pending|failed|needs> [HH:MM] [<citation>]`
+//! line after a step, the citation a sha of 7 to 40 hex digits or `#` and
+//! digits: a ✓ or done with one is done, without one claimed, and any other
+//! status ignores it (#1611). `loop`, `alt`, `opt`, `par` (and `par_over`), `critical` and
 //! `break` draw as frames around their steps, an `alt`'s `else`, a `par`'s `and`
 //! and a `critical`'s `option` as dividers, at most [`MAX_FRAME_DEPTH`] deep.
 //! `activate`, `deactivate`, a `+` or `-` before a target, a central
@@ -43,7 +45,10 @@ pub const COMPACT_SLOT: usize = 10;
 /// A step's status, from its `%% status:` line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
+    /// A ✓ or done that cites a sha or a #N.
     Done,
+    /// A ✓ or done that cites nothing: the agent's word alone (#1611).
+    Claimed,
     Running,
     Pending,
     Failed,
@@ -54,6 +59,7 @@ impl Status {
     pub fn glyph(self, g: &Glyphs) -> &'static str {
         match self {
             Status::Done => g.done,
+            Status::Claimed => g.claimed,
             Status::Running => g.running,
             Status::Pending => g.idle,
             Status::Failed => g.step_failed,
@@ -271,12 +277,15 @@ impl Flow {
         self.steps.iter().any(|s| s.status.is_some())
     }
 
-    /// The first step not done, once any step carries a status.
+    /// The first step neither done nor claimed, once any step carries a status:
+    /// a claim is about a step the agent has left (#1611).
     pub fn current(&self) -> Option<usize> {
         if !self.has_status() {
             return None;
         }
-        self.steps.iter().position(|s| s.status != Some(Status::Done))
+        self.steps
+            .iter()
+            .position(|s| !matches!(s.status, Some(Status::Done | Status::Claimed)))
     }
 }
 
@@ -316,20 +325,29 @@ fn is_time(s: &str) -> bool {
     }
 }
 
-/// `status: <word> [HH:MM]`, the text after `%%`.
+/// A citation: a sha of 7 to 40 hex digits, or `#` and digits (#1611).
+fn is_cite(s: &str) -> bool {
+    let sha = (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let number = s
+        .strip_prefix('#')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    sha || number
+}
+
+/// `status: <word> [HH:MM] [<citation>]`, the text after `%%`. A ✓ or done
+/// with a citation is done and one without is claimed; any other status
+/// ignores its citation (#1611).
 fn status_line(rest: &str) -> Result<(Status, Option<String>), String> {
-    let mut words = rest.split_whitespace();
+    let mut words = rest.split_whitespace().peekable();
     let word = words.next().ok_or("a status line without a status")?;
     let status = Status::parse(word).ok_or_else(|| format!("unknown status {word}"))?;
-    let time = match words.next() {
-        Some(t) if is_time(t) => Some(t.to_string()),
-        Some(t) => return Err(format!("not a time {t}")),
-        None => None,
-    };
-    match words.next() {
-        Some(extra) => Err(format!("more after the status: {extra}")),
-        None => Ok((status, time)),
+    let time = words.next_if(|t| is_time(t)).map(str::to_string);
+    let cited = words.next_if(|c| is_cite(c)).is_some();
+    if let Some(extra) = words.next() {
+        return Err(format!("not a time or a citation: {extra}"));
     }
+    let claimed = status == Status::Done && !cited;
+    Ok((if claimed { Status::Claimed } else { status }, time))
 }
 
 /// Mermaid's ten arrows, longest first: a spelling that holds a shorter one
