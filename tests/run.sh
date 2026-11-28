@@ -10646,6 +10646,29 @@ is "a share rounds up, a reset down, and a window that is not numbers is -_- (#1
 printf '%s' '{"context_window":{"used_percentage":5}}' \
     | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
 is "a payload with no rate_limits clears the allowance (#1600)" "" "$(cxrl)"
+# A share over 100 or under 0 is clamped, -0 too: jq's ceil of -0.5 is -0, printed "-0".
+cxj='{"context_window":{"used_percentage":5},"rate_limits":{'
+cxj=$cxj'"five_hour":{"used_percentage":100.4,"resets_at":1900000000},'
+cxj=$cxj'"seven_day":{"used_percentage":-0.5,"resets_at":1900000000}}}'
+printf '%s' "$cxj" | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+cxg=$(cxrl)
+is "a share over 100 or under 0, -0 too, is clamped to 0 to 100 (#1600)" \
+    "100_1900000000_0_1900000000" "${cxg#*_}"
+# A rate_limits with no usable window is no reading, and a reset jq prints with an exponent
+# (1e+300) is not a number the board reads. Each clears the fixture's reading.
+cx_fix() {
+    TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
+        < "$DIR/tests/fixtures/statusline.json" >/dev/null
+}
+cx_fix
+printf '%s' '{"context_window":{"used_percentage":5},"rate_limits":{}}' \
+    | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "a rate_limits with no usable window clears the allowance (#1600)" "" "$(cxrl)"
+cx_fix
+cxj='{"context_window":{"used_percentage":5},"rate_limits":{'
+cxj=$cxj'"five_hour":{"used_percentage":31,"resets_at":1e300}}}'
+printf '%s' "$cxj" | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "a reset printed with an exponent clears the allowance (#1600)" "" "$(cxrl)"
 # The fallback branch sums cache tokens that can legitimately exceed
 # context_window_size (1900/1000 here) -- the write must still clamp to the
 # promised 0-100, not the raw ratio.
@@ -10727,7 +10750,7 @@ exec "$TMUX_REAL" "\$@"
 SHIMEOF
 chmod +x "$CXS/tmux"
 # The allowance carries the minute it was read (#1600), so a second call in a new minute
-# writes it again: a pair that crossed a minute is run again, at most three times. Each pair
+# writes it again: a pair that crossed a minute is run again, three pairs at most in all. Each pair
 # starts with neither option set.
 cx_shim() {
     PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \

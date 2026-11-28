@@ -2605,6 +2605,34 @@ fn a_bad_allowance_value_shows_nothing() {
     }
 }
 
+/// #1600: a window not of the shim's shape spoils the whole value, the other window too:
+/// `-_-` is the one spelling of a window the payload lacked.
+#[test]
+fn a_malformed_window_hides_the_whole_allowance() {
+    let (now, soon) = (epoch_now(), epoch_now() + R5);
+    let bad = [
+        format!("{now}_101_{soon}_18_{soon}"),
+        format!("{now}_42_x_18_{soon}"),
+        format!("{now}_-_{soon}_18_{soon}"),
+    ];
+    for (i, v) in bad.iter().enumerate() {
+        let foot = card_foot_at(&format!("rlmal{i}"), &opus_84k(), v, 60);
+        assert!(foot.contains(" opus · 84k ") && !foot.contains('%'), "{v}: {foot}");
+    }
+}
+
+/// #1600: with every window shut, past or too far ahead, nothing of the allowance shows, not
+/// even the age of the reading.
+#[test]
+fn every_window_shut_shows_nothing_of_the_allowance() {
+    let shut = rl(12 * 60 + 30, Some((42, -1)), Some((18, 7 * DAY + HOUR + 120)));
+    let foot = card_foot_at("rlshut", &opus_84k(), &shut, 60);
+    assert!(
+        foot.contains(" opus · 84k ") && !foot.contains('%') && !foot.contains("ago"),
+        "{foot}"
+    );
+}
+
 /// #1374: tmux prints every field of the format the board passes, so a row one short of
 /// FIELDS is not that format: it makes no pane and names no session.
 #[test]
