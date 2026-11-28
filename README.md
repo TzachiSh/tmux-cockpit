@@ -152,6 +152,7 @@ None is required.
 | `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, the panel, info, the branch picker, `tm` and sessions; `nerd` draws the default there, but for the board's subagent badge |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
+| `@cockpit_accounts` | unset | your Claude Code accounts, `name=dir` pairs such as `p1=~/.claude p2=~/.claude-2`: each tile names its pane's account, and the board reads transcripts under each; see [configuration](docs/configuration.md#accounts) |
 | `@cockpit_bg_poll` | `10` | seconds between ticks of the poller that gives a pane showing a background job its state (agent view, `claude attach`); `off` disables and the poller never starts; an empty, invalid or `0` value falls back to 10 |
 
 For a bar of your own, `@cockpit_statusbar off` and the

@@ -559,7 +559,10 @@ misses the hooks' events (see [Subagent event log](#subagent-event-log)), and th
 no dir says so in `@cockpit_poll_err`, but only when that holds nothing else, so it replaces no
 other message.
 Since that option is global, a later hook in any pane that sees the scrub off, or sees a dir,
-takes the message back. It takes back only that message (#1429). Claude Code also turns the
+takes the message back. It takes back only that message (#1429). Such a hook also marks its
+pane, `@cockpit_cfg_unseen 1`, in the same call, and a hook in that pane that sees the scrub off or
+a dir takes the mark back: the board then shows `?` for the pane's account, since its dir is not
+known to be the default (#1601). Claude Code also turns the
 scrub on under GitHub Actions unless it is `0`, `false`, `no` or `off`, and the hook says
 nothing there. To keep a custom dir or state folder, set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or
 leave it unset.
@@ -683,7 +686,7 @@ not expand formats:
 
 A new `session_id` drops the old `@cockpit_transcript` first, so a pane never points at the
 previous session's file. A missing or refused field leaves the option as it was. The reader
-(`data::transcript::file`) takes `@cockpit_transcript` if it still resolves under the
+(`data::transcript::file`) takes `@cockpit_transcript` if it still resolves under a
 projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
 is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
 `@cockpit_session` through `review-gate`, with the same UUID test and transcript drop
@@ -695,7 +698,8 @@ a byte at a time. `review-gate` reads the `Stop` payload's whole line with `head
 (#315). Claude sends the ids
 first; one past the cap, or cut by it, is skipped and the old value stays. The hook checks
 the path against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with; the reader
-uses its own environment's (usually the tmux server's). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
+uses its own environment's (usually the tmux server's), then each one `@cockpit_accounts` lists
+(#1601). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
 on, the hook sees no `CLAUDE_CONFIG_DIR` and checks against `~/.claude/projects`, so it refuses
 a transcript under a custom dir ([Agent view and background jobs](#agent-view-and-background-jobs),
 #1429). Export `CLAUDE_CONFIG_DIR` where tmux

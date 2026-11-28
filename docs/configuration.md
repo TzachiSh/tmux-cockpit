@@ -56,6 +56,34 @@ The sessions screen (`prefix + s`) reads them as **ceilings**, not sizes: it
 shrinks to fit its sessions, at most 70% of the client on a desktop, 90% wide
 below 160 columns, and full width in touch mode.
 
+## Accounts
+
+Claude Code keeps each login in its own config dir, the `CLAUDE_CONFIG_DIR` a `claude` runs
+with ([authentication](https://code.claude.com/docs/en/authentication)). List yours, each
+with a short name, and the board names the account on each agent's tile, before its
+allowance:
+
+```tmux
+set -g @cockpit_accounts "p1=~/.claude p2=~/.claude-2 p3=~/.claude-3 work=~/.claude-work"
+```
+
+- A name is letters, digits, `-` and `_`. A dir is absolute, `~` or under `~/`, holds no space,
+  and is on disk. One bad entry refuses the whole list, and the board's log (`COCKPIT_LOG`) says
+  why.
+- The board reads the option when it starts, so a change shows on the next board.
+- The name is that of the dir the pane's hooks saw, `@cockpit_cfg`. A pane whose hooks saw none
+  runs on `~/.claude`. With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no dir at all,
+  so the tile shows `?` and never guesses the default
+  ([Agent view and background jobs](states-and-hooks.md#agent-view-and-background-jobs)).
+- The board reads a transcript under the `projects` dir of any listed account, after its
+  own, so a pane on another account keeps its doing line, model, context and subagents.
+
+Log in once per dir, with `CLAUDE_CONFIG_DIR=~/.claude-2 claude` and so on, and start each pane's
+`claude` with its account's `CLAUDE_CONFIG_DIR`. Keep one login per dir: two dirs on one login
+drift apart when the server rotates the refresh token. Between the personal dirs, link
+`projects/`, `history.jsonl` and `settings.json` to the first one's, so they share sessions, prompt
+history and settings. Leave the work dir unlinked: it keeps its own history.
+
 ## Agent names
 
 An entry in `@cockpit_agents` matches the pane's command in any case: `Cursor` marks a
