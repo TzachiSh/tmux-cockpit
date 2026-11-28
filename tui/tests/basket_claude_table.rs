@@ -26,7 +26,7 @@ impl Server {
     fn pane(&self, win: &str, name: &str, marked: bool) -> String {
         let bin = self.dir.join(name);
         if !bin.exists() {
-            std::fs::copy("/bin/bash", &bin).unwrap();
+            fake::copy_exec(std::path::Path::new("/bin/bash"), &bin);
         }
         let cmd = format!("{} -c 'sleep 300; :'", bin.display());
         let d = self.dir.display().to_string();

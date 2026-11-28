@@ -22,7 +22,7 @@ impl Server {
     /// A pane running a copy of bash named `name`: tmux reports that name.
     fn pane(&self, name: &str) -> (String, Vec<String>) {
         let bin = self.dir.join(name);
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        fake::copy_exec(std::path::Path::new("/bin/bash"), &bin);
         let cmd = format!("{} -c 'sleep 300; :'", bin.display());
         let d = self.dir.display().to_string();
         let pane = self.tmux(&["new-window", "-d", "-P", "-F", "#{pane_id}", "-c", &d, &cmd]);

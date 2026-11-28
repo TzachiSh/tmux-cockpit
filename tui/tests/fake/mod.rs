@@ -49,14 +49,23 @@ fn beside(path: &Path, ext: &str) -> PathBuf {
 
 /// `body` as an executable at `path`, replacing whatever was there.
 pub fn write_exec(path: &Path, body: &str) {
-    let (src, new) = (beside(path, ".src"), beside(path, ".new"));
+    let src = beside(path, ".src");
     std::fs::write(&src, body).unwrap();
-    let st = std::process::Command::new("cp").arg(&src).arg(&new).status().unwrap();
-    assert!(st.success(), "cp {} {}: {st}", src.display(), new.display());
+    copy_exec(&src, path);
     std::fs::remove_file(&src).unwrap();
+}
+
+/// A copy of `from` as an executable at `to`, replacing whatever was there: a `cp`
+/// child writes it beside `to`, and it is renamed in, so this process never opens
+/// the file that runs for writing (#541, #1339).
+#[allow(dead_code)]
+pub fn copy_exec(from: &Path, to: &Path) {
+    let new = beside(to, ".new");
+    let st = std::process::Command::new("cp").arg(from).arg(&new).status().unwrap();
+    assert!(st.success(), "cp {} {}: {st}", from.display(), new.display());
     std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755)).unwrap();
     // A new file under the old name: a fake still running keeps the one it had.
-    std::fs::rename(&new, path).unwrap();
+    std::fs::rename(&new, to).unwrap();
 }
 
 /// A test's own directory, removed when the guard drops: on a pass and on a
@@ -1509,9 +1518,9 @@ fn tmux_on(sock: &str, args: &[&str]) -> String {
 #[allow(dead_code)]
 pub fn held_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
     let bin = dir.join(name);
-    // a copy a pane already runs cannot be written over (ETXTBSY)
+    // made once: a later row's pane runs the same copy
     if !bin.exists() {
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        copy_exec(Path::new("/bin/bash"), &bin);
     }
     let hold = dir.join("held");
     write_exec(&hold, "#!/bin/sh\nsleep 0.3\nexec \"$@\"\n");
@@ -1538,9 +1547,9 @@ pub fn named_pane(sock: &str, dir: &Path, name: &str) -> (String, Vec<String>) {
         return held_pane(sock, dir, name);
     }
     let bin = dir.join(name);
-    // a copy a pane already runs cannot be written over (ETXTBSY)
+    // made once: a later row's pane runs the same copy
     if !bin.exists() {
-        std::fs::copy("/bin/bash", &bin).unwrap();
+        copy_exec(Path::new("/bin/bash"), &bin);
     }
     let named = dir.join("named");
     let body = concat!(
@@ -1603,6 +1612,10 @@ pub fn settle(sock: &str, pane: &str, comm: &str, argv: &[&str]) {
 #[allow(dead_code)]
 pub fn settle_within(sock: &str, pane: &str, comm: &str, argv: &[&str], tries: usize) -> Result<(), String> {
     let pid = tmux_on(sock, &["display-message", "-p", "-t", pane, "#{pane_pid}"]);
+    // tmux gives no pane_pid once the pane's pty is closed: its process ended (#1339)
+    if pid.is_empty() {
+        return Err(format!("pane {pane} has no process (it ended)"));
+    }
     let mut last = (String::new(), None);
     for _ in 0..tries {
         last = names(&pid);
