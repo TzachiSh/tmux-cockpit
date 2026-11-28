@@ -5673,6 +5673,11 @@ is "and it exits 2"                         "2" "$dcrc"
 dshim cockpit-tui "cockpit-tui 0.0.1" "$DC"
 dcout=$(COCKPIT_TUI_BIN="$DC/cockpit-tui" dc "$DCP")
 is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
+# 0.4.0 has none of the basket, files, label, pane, view and workdir screens (#457).
+dshim cockpit-tui "cockpit-tui 0.4.0" "$DC"
+dcout=$(COCKPIT_TUI_BIN="$DC/cockpit-tui" dc "$DCP")
+is "a 0.4.0 binary, without screens the scripts call, is a fail row" "1" \
+   "$(dcrow "$dcout" "fail cockpit-tui")"
 # No optional tool is left (bat went with the previews, #228): a warn row is a
 # revdiff older than the tested one.
 mkdir -p "$DC/oldrd"; dshim revdiff "version: 1.12.0" "$DC/oldrd"
@@ -16052,6 +16057,16 @@ case "$tfout" in
             "cockpit-tui 0.9.0 already current" "$tfout" ;;
 esac
 is "and exits 0 with it in place" "0 cockpit-tui 0.9.0" "$tfrc $(tf_ver)"
+# Unpinned with no binary, the fetch asks for the floor's release. v0.4.0 has none of the
+# screens the scripts call, so the floor is v0.5.0 (#457).
+mv "$TFB" "$TF/keep9"
+tfout=$(PATH="$TF/tmuxnone:$PATH"; tf "$TFGONE")
+tfl="unpinned with no binary, it asks for v0.5.0, the floor"
+case "$tfout" in
+    *"no release cockpit-tui-v0.5.0 ("*) ok "$tfl" ;;
+    *) bad "$tfl" "skip: no release cockpit-tui-v0.5.0 (...)" "$tfout" ;;
+esac
+mv "$TF/keep9" "$TFB"
 # @cockpit_tui_version below TUI_MIN would reinstall a binary the scripts refuse.
 tfout=$(PATH="$TF/tmuxold:$PATH"; tf "$TFR"); tfrc=$?
 is "an @cockpit_tui_version below TUI_MIN is refused" "1" "$tfrc"
@@ -23622,7 +23637,9 @@ BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
 BRX=$(mktmpd)
 cat > "$BRX/cockpit-tui" <<'EOS'
 #!/bin/sh
-# prints BR_STUB_OUT once, then leaves like esc, so a refused answer cannot loop
+# prints BR_STUB_OUT once, then leaves like esc, so a refused answer cannot loop; each run
+# is a line in BR_STUB_OUT.runs
+echo x >> "$BR_STUB_OUT.runs"
 [ -e "$BR_STUB_OUT.used" ] && exit 1
 : > "$BR_STUB_OUT.used"; cat "$BR_STUB_OUT"
 EOS
@@ -23695,6 +23712,20 @@ env -u TMUX COCKPIT_TUI_BIN="$BRX/cockpit-tui" BR_STUB_OUT="$BRX/out" \
 is "older binary: a switch runs no filter driver a submodule's own config names (#1272)" \
     "oldsub two none" "$(br_cur "$BRSM/sup") $(git -C "$BRSM/sup/sub" log -1 --format=%s 2>&1) \
 $([ -e "$BRSM/smudged" ] && echo ran || echo none)"
+# The script acts on no answer (#1271): every line the old binary printed gets the
+# stale-binary message, and nothing is checked out.
+for brv in 'switch old' 'track origin/only-remote' 'create fresh1271' "goto $BRR/none"; do
+    bro=$(br_stub "$brv"); brc=$(br_cur "$BRR"); git -C "$BRR" switch -q main 2>/dev/null
+    case "$bro" in
+        *"unexpected answer from cockpit-tui: $brv"*"older than the plugin"*) bro=stale ;;
+    esac
+    is "a '${brv%% *}' line is not acted on: the stale-binary message, still on main" \
+       "stale main" "$bro $brc"
+done
+# A refused answer ends the popup, as esc does: no loop draws the picker again (#1271).
+rm -f "$BRX/out.runs"; br_stub 'rm -rf /' >/dev/null
+is "a refused answer ends the popup: the picker ran once" "1" \
+   "$(grep -c . "$BRX/out.runs" 2>/dev/null)"
 rm -rf "$BRR" "$BRM" "$BRX" "$BRSM"
 
 echo "== tmux-branch (#228): prefix b still switches with a binary that prints switch <name> =="
@@ -23750,6 +23781,16 @@ out=$(cd "${BRR%/*}" &&
     env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" \
     </dev/null 2>&1)
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
+# A dotfiles setup's GIT_DIR in tmux's environment would pass a folder that is no repo, and
+# start the picker there: lib/git-env.sh drops it before the check (#730).
+out=$(env -u TMUX GIT_DIR="$BRR/.git" COCKPIT_TUI_BIN="$BRN/cockpit-tui" \
+    "$DIR/scripts/tmux-branch" "$BRN" </dev/null 2>&1)
+brl="an inherited GIT_DIR passes no folder that is no repo"
+case "$out" in
+    *"picker for"*) bad "$brl" "cockpit: not a git repository: $BRN" "$out" ;;
+    *"cockpit: not a git repository: $BRN"*) ok "$brl" ;;
+    *) bad "$brl" "cockpit: not a git repository: $BRN" "$out" ;;
+esac
 rm -rf "$BRN" "$BRR"
 
 echo "== tmux-branch: older binary, an inherited GIT_DIR or kin never switches another repo =="
@@ -24382,7 +24423,8 @@ BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"
 BCD=$(mktmpd); BCW="$BCD/wt"
 git -C "$BCR" worktree add -q "$BCW" held >/dev/null 2>&1
 BCS="cockpit-bc360-$$"; SOCKS="$SOCKS $BCS"
-"$TMUX_REAL" -L "$BCS" -f /dev/null new-session -d -s a -c "$BCR" 'exec sleep 300' >/dev/null 2>&1
+# a's pane is a shell, where the script runs (#1271)
+"$TMUX_REAL" -L "$BCS" -f /dev/null new-session -d -s a -x 100 -y 30 -c "$BCR" >/dev/null 2>&1
 "$TMUX_REAL" -L "$BCS" new-session -d -s z -c "$BCW" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$BCS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 BCO=$("$TMUX_REAL" -L "$BCS" list-panes -t a -F '#{pane_id}')
@@ -24403,7 +24445,12 @@ bc_where() {                  # -> "A=<session> B=<session> "
 }
 # The key leaves A on the pane it was pressed in; the script takes it at start.
 "$TMUX_REAL" -L "$BCS" set -p -t "$BCO" @cockpit_branch_client "$BCA" >/dev/null 2>&1
-bg_goto "$BCS" "$BCO" "$BCR" "$BCW"
+# The script in that pane, with the binary under test: ↵ on held goes to the worktree.
+"$TMUX_REAL" -L "$BCS" send-keys -t "$BCO" "COCKPIT_TUI_BIN=$(tq "$COCKPIT_TUI_BIN")\
+ $(tq "$DIR/scripts/tmux-branch") -p $BCO $(tq "$BCR"); echo BCDONE=\$?" Enter
+until_cap "$BCS" "$BCO" '*branch>*'
+"$TMUX_REAL" -L "$BCS" send-keys -t "$BCO" -l held; until_cap "$BCS" "$BCO" '*branch> held*'
+"$TMUX_REAL" -L "$BCS" send-keys -t "$BCO" Enter; until_cap "$BCS" "$BCO" '*BCDONE=[0-9]*'
 is "a goto with the pin moves the client that pressed the key" "A=z B=a " "$(bc_where)"
 is "and lands it on the pane in the worktree" "$BCZ" \
    "$("$TMUX_REAL" -L "$BCS" display-message -p -t "$BCA" '#{pane_id}')"
@@ -24681,6 +24728,63 @@ bj_done || { "$TMUX_REAL" -L "$BJS" send-keys -t "$BJP" Escape; bj_done; }
 unset -f bj_run bj_done bj_cap bj_wins bj_active bj_win1
 git -C "$BJR" worktree remove --force "$BJW" >/dev/null 2>&1
 rm -rf "$BJD" "$BJR" "$BJM"
+fi
+
+echo "== tmux-branch (#303): the binary's goto moves a client across sessions =="
+# The binary under test on a real server; tui/tests/branch_goto.rs has the argv. The script
+# runs in a pane of d0, the first session, which its $TMUX names, and -p is the origin pane,
+# in s1. A control client sits on s1. The worktree's panes are in s2, in a window that has a
+# second pane and is not current. A new window not pinned to the origin's would land in d0.
+if need_tmux "branch goto across sessions"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+BXD=$(mktmpd); BXR=$(mktmpd); BXM=$(mktmpd); br_repo "$BXR" "$BXM"
+BXW="$BXD/wt"; git -C "$BXR" worktree add -q "$BXW" held >/dev/null 2>&1
+git -C "$BXR" worktree add -q -b second303 "$BXD/second" >/dev/null 2>&1
+BXS="cockpit-bx303-$$"; SOCKS="$SOCKS $BXS"
+bx() { "$TMUX_REAL" -L "$BXS" "$@"; }
+bx -f /dev/null new-session -d -s d0 -x 100 -y 30 -c "$(fesc "$BXR")" >/dev/null 2>&1
+bx new-session -d -s s1 -x 100 -y 30 -c "$(fesc "$BXR")" 'exec sleep 300' >/dev/null 2>&1
+bx new-session -d -s s2 -x 100 -y 30 -c "$(fesc "$BXD")" 'exec sleep 300' >/dev/null 2>&1
+BXP=$(bx list-panes -t d0 -F '#{pane_id}'); BXO=$(bx list-panes -t s1 -F '#{pane_id}')
+BXT1=$(bx new-window -P -F '#{pane_id}' -t s2: -c "$(fesc "$BXW")" 'exec sleep 300')
+BXT2=$(bx split-window -P -F '#{pane_id}' -t "$BXT1" -c "$(fesc "$BXW")" 'exec sleep 300')
+BXTW=$(bx display-message -p -t "$BXT1" '#{window_id}')
+bx select-window -t s2:0
+BXN=0
+bx_run() {                    # bx_run <branch>  the script in d0's pane, ↵ on that branch
+    BXN=$((BXN+1))
+    bx send-keys -t "$BXP" "COCKPIT_TUI_BIN=$(tq "$COCKPIT_TUI_BIN")\
+ $(tq "$DIR/scripts/tmux-branch") -p $BXO $(tq "$BXR"); echo BXDONE$BXN=\$?" Enter
+    until_cap "$BXS" "$BXP" '*branch>*'
+    bx send-keys -t "$BXP" -l "$1"; until_cap "$BXS" "$BXP" "*branch> $1*"
+    bx send-keys -t "$BXP" Enter; until_cap "$BXS" "$BXP" "*BXDONE$BXN=[0-9]*"
+}
+BXFIFO=$(mktmpd)/in; mkfifo "$BXFIFO"
+bx -C attach -t s1 < "$BXFIFO" > /dev/null 2>&1 &
+exec 8> "$BXFIFO"
+until_out '?*' bx list-clients -F '#{client_name}'
+bx_run held
+is "the client on s1 is switched to the worktree's session" "s2" \
+    "$(bx list-clients -F '#{client_session}')"
+is "and the window is the one holding the pane" "$BXTW" \
+    "$(bx display-message -p -t s2: '#{window_id}')"
+is "and the pane is the first one in the tree, though the other was active" "$BXT1" \
+    "$(bx display-message -p -t s2: '#{pane_id}')"
+exec 8>&-
+until_out '' bx list-clients -F '#{client_name}'
+# no client, so only select-window and select-pane can do it
+bx select-window -t s2:0; bx select-pane -t "$BXT2"
+bx_run held
+is "with no client, the window is selected" "$BXTW" "$(bx display-message -p -t s2: '#{window_id}')"
+is "and so is the pane" "$BXT1" "$(bx display-message -p -t s2: '#{pane_id}')"
+bx_run second303
+is "a new window lands in the session of the pane the popup came from" "2" \
+    "$(bx list-windows -t s1 | grep -c .)"
+is "and not in the session \$TMUX names" "1" "$(bx list-windows -t d0 | grep -c .)"
+bx kill-server >/dev/null 2>&1
+unset -f bx bx_run
+rm -rf "$BXD" "$BXR" "$BXM"
 fi
 
 echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
