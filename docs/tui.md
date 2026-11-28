@@ -3010,12 +3010,13 @@ workspace, no crate split.
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
 | `store` | the `Store` trait (`get`, `put_if_revision`, `watch`), `Key`, `Revision` and `LocalStore`, one 0600 file per key under XDG state (#1020); unwired, nothing calls it |
 | `ask` | an agent's open AskUserQuestion (epic #1500, [docs/ask.md](ask.md)): `ask::model` holds every question, header, option label, description, preview and multiSelect of its input, and `data::transcript::open_ask` reads it from the transcript (#1504); `ask::rules` loads and checks the owner's auto-answer rules file and `cockpit-tui ask-rules accept` accepts it (#1508) |
+| `msg` | `cockpit-tui msg send` (#1575, epic #1573): one agent session's message to another, in a private store under XDG state ([Messages between sessions](states-and-hooks.md#messages-between-sessions)) |
 
 Every action the user takes on a pane, a session or a repository stays a shell script:
 the binary prints `<verb> <target>` and a wrapper runs it. The binary still writes its
 own state: 0600 files (the board's state, agents.json, the accepted copy of the ask
-rules, #1508) and its own tmux options (`@cockpit_board_wake` in `push.rs`, a pane's
-basket in `basket.rs`).
+rules, #1508, the message store, #1575) and its own tmux options (`@cockpit_board_wake`
+in `push.rs`, a pane's basket in `basket.rs`).
 
 ### Push wakeups
 
@@ -3535,6 +3536,10 @@ pane id, or a second argument, with the usage on stderr only. The shell's one wa
 label is `label_ask` (`scripts/lib/label.sh`), which says `the pane` whenever the binary
 cannot answer: a gone pane, a missing binary, an older one with no `label`, or a hang past
 its bound. The shell builds no label of its own.
+
+**`cockpit-tui msg send`** (#1575) passes a message from one agent session to another:
+[Messages between sessions](states-and-hooks.md#messages-between-sessions) holds its rules,
+the store and the exit codes.
 
 ## The board as the review queue (#253)
 

@@ -274,18 +274,53 @@ impl LocalStore {
     }
 }
 
-/// `bytes` as the whole of `path` in `dir`, through `tmp` beside it: a killed
-/// writer's leftover `tmp` is removed first. 0600 is passed to the create, which a
-/// umask can only narrow; fsync, then a rename the old file is replaced by whole.
-/// The error names the path it failed at. The caller keeps `tmp` to one writer:
-/// the store under the key's lock, `ask::rules::accept` by its own name (#1508).
+/// `bytes` as the whole of `path` in `dir`, through `tmp` beside it ([`write_temp`]),
+/// then a rename the old file is replaced by whole. The error names the path it failed
+/// at. The caller keeps `tmp` to one writer: the store under the key's lock,
+/// `ask::rules::accept` by its own name (#1508).
 pub fn replace_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), (PathBuf, io::Error)> {
-    let at = |p: &Path| {
-        let p = p.to_path_buf();
-        move |e: io::Error| (p, e)
+    write_temp(tmp, bytes)?;
+    if let Err(e) = std::fs::rename(tmp, path) {
+        let _ = std::fs::remove_file(tmp);
+        return Err((path.to_path_buf(), e));
+    }
+    // The rename reaches the disk with the folder's own fsync.
+    File::open(dir).and_then(|d| d.sync_all()).map_err(|e| (dir.to_path_buf(), e))
+}
+
+/// `bytes` as the new file `path` in `dir`, through `tmp` beside it ([`write_temp`]), then
+/// link(2), which never replaces: `Ok(false)` when a name is there already, a dangling link
+/// too, and that name is left as it is. `tmp` is removed either way, and `Err` leaves no new
+/// file at `path`. The error names the path it failed at (#1575).
+pub fn create_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, (PathBuf, io::Error)> {
+    write_temp(tmp, bytes)?;
+    let linked = std::fs::hard_link(tmp, path);
+    let removed = std::fs::remove_file(tmp);
+    let made = match linked {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) => return Err((path.to_path_buf(), e)),
     };
+    if let Err(e) = removed {
+        // a second name of the new file would outlive the call: take the new one back
+        if made {
+            let _ = std::fs::remove_file(path);
+        }
+        return Err((tmp.to_path_buf(), e));
+    }
+    if made {
+        File::open(dir).and_then(|d| d.sync_all()).map_err(|e| (dir.to_path_buf(), e))?;
+    }
+    Ok(made)
+}
+
+/// `bytes` as the new file `tmp`, synced: a killed writer's leftover `tmp` is removed
+/// first, and `tmp` again on a failure. 0600 is passed to the create, which a umask can
+/// only narrow. The first step of [`replace_file`] and [`create_file`].
+fn write_temp(tmp: &Path, bytes: &[u8]) -> Result<(), (PathBuf, io::Error)> {
+    let at = |e: io::Error| (tmp.to_path_buf(), e);
     match std::fs::remove_file(tmp) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(tmp)(e)),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(e)),
         _ => {}
     }
     let written = OpenOptions::new()
@@ -294,15 +329,11 @@ pub fn replace_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(tmp)
-        .and_then(|mut f| f.write_all(bytes).and_then(|_| f.sync_all()))
-        .map_err(at(tmp))
-        .and_then(|_| std::fs::rename(tmp, path).map_err(at(path)));
+        .and_then(|mut f| f.write_all(bytes).and_then(|_| f.sync_all()));
     if written.is_err() {
         let _ = std::fs::remove_file(tmp);
     }
-    written?;
-    // The rename reaches the disk with the folder's own fsync.
-    File::open(dir).and_then(|d| d.sync_all()).map_err(at(dir))
+    written.map_err(at)
 }
 
 /// The last revision a put wrote for the key, kept in its lock file; 0 when
