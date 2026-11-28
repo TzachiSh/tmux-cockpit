@@ -1276,6 +1276,29 @@ fn a_one_shot_read_waits_for_the_lookup() {
     assert!(r.cache().exists());
 }
 
+/// #1597, the child half of the row below: no cache folder, so a one-shot read keeps
+/// the answer in memory alone.
+#[test]
+fn no_cache_folder_child() {
+    if std::env::var_os(fake::HOMELESS).is_some() {
+        let sess = || list_panes().unwrap().into_iter().next().unwrap().sess;
+        assert_eq!((sess(), sess()), ("s-100".to_string(), "s-100".to_string()));
+    }
+}
+
+/// #1597: with no HOME and a relative XDG_CACHE_HOME there is no cache folder. A one-shot
+/// read still gets the session, asked once and kept in memory, and writes no agents.json
+/// in the cwd, where a path made from the unset HOME would put it.
+#[test]
+fn with_no_cache_folder_a_lookup_writes_no_file() {
+    let r = Rig::with("nocache", ONE, false);
+    let cwd = r.dir.join("cwd");
+    std::fs::create_dir(&cwd).unwrap();
+    fake::passes_homeless(r.held.token(), "no_cache_folder_child", &cwd, &[("XDG_CACHE_HOME", "rel")]);
+    assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0, "a file was written in the cwd");
+    assert_eq!(r.forks(), 1);
+}
+
 /// Several panes, one call: what the answer did not name is not asked again.
 #[test]
 fn a_one_shot_read_asks_once_for_pids_the_answer_lacks() {

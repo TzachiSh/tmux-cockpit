@@ -7689,15 +7689,33 @@ esac
         /// [`rig_run_with`] with `env` added to the child's own environment.
         fn rig_run_env(name: &str, cases: &str, script: &str, extra: &[&str], env: &[(&str, &OsStr)]) -> Ran {
             let d = scratch(name);
+            let p = |f: &str| d.0.join(f).display().to_string();
+            let (rows, ledger) = (p("rows.jsonl"), p("cost.tsv"));
+            let mut c = rig_command(&d, cases, script, &[&["--out", &rows, "--ledger", &ledger][..], extra].concat());
+            c.envs(env.iter().copied());
+            ran(&d, c)
+        }
+
+        /// #1597: [`rig_run_with`] with no `--out` or `--ledger` but those in `extra`, in a
+        /// child with no HOME, `set` in its environment and `cwd` as its folder.
+        fn rig_run_homeless(name: &str, cases: &str, script: &str, extra: &[&str], cwd: &Path, set: &[(&str, &str)]) -> Ran {
+            let d = scratch(name);
+            let mut c = rig_command(&d, cases, script, extra);
+            c.env_remove("HOME").envs(set.iter().copied()).current_dir(cwd);
+            ran(&d, c)
+        }
+
+        /// The child a rig run starts: `cases` and the stand-in claude `script` in `d`, the
+        /// rig's own flags, then `extra`.
+        fn rig_command(d: &judge::Scratch, cases: &str, script: &str, extra: &[&str]) -> std::process::Command {
             // tune and held-out cases in one --cases file: only the held-out
             // file may hold both (#861)
             std::fs::write(d.0.join("holdout-blind.txt"), cases).unwrap();
             let claude = fake(&d.0, script);
             let p = |f: &str| d.0.join(f).display().to_string();
-            let (cases, rows, ledger) = (p("holdout-blind.txt"), p("rows.jsonl"), p("cost.tsv"));
+            let cases = p("holdout-blind.txt");
             let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
-            let out = ["--out", &rows, "--ledger", &ledger];
-            let args = [&base[..], &out, extra].concat().join("\n");
+            let args = [&base[..], extra].concat().join("\n");
             let mut c = std::process::Command::new(std::env::current_exe().unwrap());
             c.args(["--exact", "tests::quiet::rig_child", "--nocapture", "--test-threads=1"]);
             for (k, v) in [("CACHE", "cache"), ("CONFIG", "config"), ("STATE", "state")] {
@@ -7711,11 +7729,50 @@ esac
             c.env_remove("CLAUDE_CONFIG_DIR");
             // the route's own model in every row, whatever their shell exports (#957)
             c.env_remove("COCKPIT_PANEL_MODEL");
-            c.envs(env.iter().copied());
+            c
+        }
+
+        /// How the child `c` of a rig in `d` ended, all it wrote, and its `--out` rows.
+        fn ran(d: &judge::Scratch, mut c: std::process::Command) -> Ran {
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
+        }
+
+        /// #1597: with no HOME and a relative XDG_STATE_HOME there is no folder for the cost
+        /// ledger, so a run given neither --ledger nor --out is refused before any call, and
+        /// writes nothing in the cwd, where a path made from the unset HOME would put it.
+        #[test]
+        fn with_no_state_folder_a_run_without_a_ledger_is_refused() {
+            let (cwd, log) = (scratch("xp-noledger-cwd"), scratch("xp-noledger-log"));
+            let calls = log.0.join("calls");
+            let script = format!("#!/bin/sh\necho call >> '{}'\ncat >/dev/null\necho ok\n", calls.display());
+            let set = [("XDG_STATE_HOME", "rel")];
+            let (code, out, err, _) = rig_run_homeless("xp-noledger", ONE, &script, &[], &cwd.0, &set);
+            assert_eq!(code, Some(2), "{out}{err}");
+            let want = "panel_eval: no folder for the cost ledger: HOME and XDG_STATE_HOME are unset or \
+                        relative; pass --ledger or --out";
+            assert!(err.contains(want), "{err}");
+            assert!(!calls.exists(), "a refused run called claude");
+            assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0, "a file was written in the cwd");
+        }
+
+        /// #1597: with no HOME and a relative XDG_CONFIG_HOME there is no config folder, so the
+        /// summary says the shipped prompt went, though a file waits in the cwd where a path
+        /// made from the unset HOME would find it.
+        #[test]
+        fn with_no_config_folder_the_summary_says_the_shipped_prompt() {
+            let (cwd, d) = (scratch("xp-nocfg-cwd"), scratch("xp-nocfg-ledger"));
+            let prompts = cwd.0.join(".config/tmux-cockpit/prompts");
+            std::fs::create_dir_all(&prompts).unwrap();
+            std::fs::write(prompts.join("write.txt"), "planted").unwrap();
+            let ledger = d.0.join("cost.tsv").display().to_string();
+            let set = [("XDG_CONFIG_HOME", "rel")];
+            let (code, out, err, _) = rig_run_homeless("xp-nocfg", ONE, RIG_CLAUDE, &["--ledger", &ledger], &cwd.0, &set);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let line = out.lines().find(|l| l.starts_with("system prompt ")).unwrap_or_default();
+            assert!(line.ends_with(" (shipped)"), "{out}");
         }
 
         /// The row of a rig run's one call, the rig's env with none of the
