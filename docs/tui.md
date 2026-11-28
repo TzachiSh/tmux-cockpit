@@ -1560,10 +1560,12 @@ ledger line, and its example flow is a test row (#1539).
   increment goes on: `autonumber 5 0` numbers 5, 6 (#1586). The list's number
   column is as wide as the largest number, and blank on a step with none.
   `Note left of`, `right of` or `over`. A
-  `%% status: <s> [HH:MM]` line after a step, the key in any case, `<s>` one of
-  `✓ ● ○ ✗ !` or `done running pending failed needs`, the time from 00:00 to
-  23:59; a `%%` at the end of a step line is part of its label, as in Mermaid.
-  Other `%%` lines are comments.
+  `%% status: <s> [HH:MM] [<citation>]` line after a step, the key in any
+  case, `<s>` one of `✓ ● ○ ✗ !` or `done running pending failed needs`, the
+  time from 00:00 to 23:59, and the citation, after the time when there is
+  one, a sha of 7 to 40 hex digits or `#` and digits, such as `#1611` (see
+  **Status**); a `%%` at the end of a step line is part of its label, as in
+  Mermaid. Other `%%` lines are comments.
 - **Statements.** A `;` ends a statement as a new line does, as in Mermaid,
   except the `;` that closes an entity code such as `#59;`. `#59;` in text
   reads as `;`, and every other entity code stays as written. A `%%` line is
@@ -1612,8 +1614,9 @@ ledger line, and its example flow is a test row (#1539).
   ends: `A─▶B`, `A┄▶B`, `A──B`, `A┄┄B`, `A─✕B`, `A┄✕B`, `A─▷B`, `A┄▷B`,
   `A◀─▶B` and `A◀┄▶B`.
 - **Anything else** is an `Err` naming the line: a line no Mermaid grammar
-  knows such as `frobnicate A` or `autonumber ten`, a bad status word or time,
-  a `title` with no text, a menu line with no `<id>:`, and these forms of
+  knows such as `frobnicate A` or `autonumber ten`, a bad status word, time or
+  citation (6 or 41 hex digits, `#12a`, `PR#12`, a citation before the time,
+  or two), a `title` with no text, a menu line with no `<id>:`, and these forms of
   Mermaid 11.15.0's grammar, each refused on purpose (#1586):
   - a keyword in another case, such as `Participant`, `AUTONUMBER` or `-X`.
     Keywords are lowercase here, and a note may start `Note`. Reading every
@@ -1650,10 +1653,16 @@ ledger line, and its example flow is a test row (#1539).
   column holds the longest label or 6 columns of it, whichever is less, and
   the rest of the line (who to whom and the time) fits too; otherwise each
   line is the label, who to whom and the time with one space between.
-- **Status.** With no status on any step there is no status column and no
-  current step. Otherwise the current step is the first one not done: `▶` in
-  the ladder's first column, `◀ here` at the end of its line in the list, or
-  on the line below when it does not fit there.
+- **Status.** A `✓` or `done` with a citation draws `✓`, done. One without
+  draws `?`, claimed: the agent says the step is done and names nothing to
+  check it by (#1611, recommendation 1 of
+  `docs/research/935/research-supervision-papers.md`). Only the citation's
+  form is checked, not that the sha or the number exists. Any other status
+  takes a citation too, such as a failed step citing its run, and draws as
+  it would without one. With no status on any step there is no status column
+  and no current step. Otherwise the current step is the first one neither
+  done nor claimed: `▶` in the ladder's first column, `◀ here` at the end of
+  its line in the list, or on the line below when it does not fit there.
 - **Notes.** A note whose first words are `NEED FROM YOU` goes in the box
   closing the drawing (`NEED FROM YOUR` is an ordinary note). Any other note
   shows after a `↳`: under the step before it, or under the header when it
@@ -1685,7 +1694,7 @@ ledger line, and its example flow is a test row (#1539).
 - **Glyphs.** `render`, `draw` and `not_drawn` take the caller's
   `theme::Glyphs`, and every mark comes from it; `flow.rs` reads no env (#1529).
   Under `COCKPIT_GLYPHS=ascii` an ASCII source draws pure ASCII: the status
-  marks `+ * . x !`, lifelines and the NEED box in `|`, `-` and `+`, a dashed
+  marks `+ ? * . x !`, lifelines and the NEED box in `|`, `-` and `+`, a dashed
   shaft `.`, the filled heads `>` and `<`, the open heads `)` and `(`, a cross
   `x`, a self step `-+<`, a note `>`, `< here`, who to whom with the arrow's
   ends (`->`, `.>`, `--`, `..`, `-x`, `.x`, `-)`, `.)`, `<->`, `<.>`), a
@@ -3051,8 +3060,7 @@ bit on a channel nobody waits on. The next board's start drops every entry
 whose pid is not a running cockpit-tui (read from `/proc/<pid>/comm`, or
 `ps -o comm=`), and sends that channel one last `-S`, which releases a waiter
 left where there is no PDEATHSIG. Only entries of the exact form
-`cockpit-board-<digits>` are read. The start also unsets `@cockpit_tui_pid`,
-which a board from before #224 may have left.
+`cockpit-board-<digits>` are read.
 
 ### The VS16 backend shim
 

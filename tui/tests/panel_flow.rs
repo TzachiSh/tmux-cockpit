@@ -164,8 +164,8 @@ fn a_status_only_on_its_own_line_after_a_step_sets_glyph_and_time() {
     use Status::*;
     let want = [
         (Some(Done), Some("09:02")),
-        (Some(Done), Some("09:20")),
-        (Some(Done), Some("09:41")),
+        (Some(Claimed), Some("09:20")),
+        (Some(Claimed), Some("09:41")),
         (Some(Running), Some("09:44")),
         (Some(Needs), None),
     ];
@@ -208,6 +208,105 @@ fn the_current_step_is_the_first_not_done_marked_in_ladder_and_list() {
 fn every_step_done_leaves_no_current_step() {
     let f = parsed("sequenceDiagram\nA->>B: x\n%% status: ✓\nB->>A: y\n%% status: done\n");
     assert_eq!(f.current(), None);
+}
+
+// ------------------------------------- a done mark cites a sha or a #N (#1611)
+
+/// The first two columns of each step's label row in a ladder with no notes, frames or NEED box: the
+/// current step's mark and the status.
+fn gutters(src: &str, w: usize, g: &Glyphs) -> Vec<String> {
+    flow::render(src, w, g)
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .map(|l| l.chars().take(2).collect())
+        .collect()
+}
+
+/// A ✓ and a done that cite nothing, then a running step.
+const CLAIMED: &str = "sequenceDiagram\nparticipant A\nparticipant B\nA->>B: one\n%% status: ✓ 09:02\n\
+B->>A: two\n%% status: done\nA->>B: three\n%% status: running\n";
+
+/// A ✓ citing a number and a done citing a sha of 7 hex digits.
+const CITED: &str = "sequenceDiagram\nparticipant A\nparticipant B\nA->>B: one\n%% status: ✓ 09:02 #123\n\
+B->>A: two\n%% status: done abc1234\n";
+
+/// A failed step citing a number and a running one citing a sha.
+const OTHER_CITED: &str = "sequenceDiagram\nparticipant A\nparticipant B\nA->>B: one\n%% status: ✗ 09:02 #123\n\
+B->>A: two\n%% status: ● abc12345\n";
+
+/// A ✓ that cites nothing, a done citing a number, then a running step.
+const MIXED: &str = "sequenceDiagram\nparticipant A\nparticipant B\nA->>B: one\n%% status: ✓ 09:02\n\
+B->>A: two\n%% status: done #1611\nA->>B: three\n%% status: running\n";
+
+#[test]
+fn a_done_without_a_citation_draws_the_claimed_mark_at_40_60_and_100() {
+    // The agent's word alone draws `?`, and the current step is the first one neither done nor claimed.
+    assert_eq!(
+        flow::render(CLAIMED, 40, &UNI),
+        ["? one    A─▶B  09:02", "? two    B─▶A", "● three  A─▶B  ◀ here"]
+    );
+    for w in [60, 100] {
+        assert_eq!(gutters(CLAIMED, w, &UNI), [" ?", " ?", "▶●"], "w={w}");
+    }
+}
+
+#[test]
+fn a_done_citing_a_number_or_a_sha_draws_done_at_40_60_and_100() {
+    assert_eq!(flow::render(CITED, 40, &UNI), ["✓ one  A─▶B  09:02", "✓ two  B─▶A"]);
+    for w in [60, 100] {
+        assert_eq!(gutters(CITED, w, &UNI), [" ✓", " ✓"], "w={w}");
+    }
+}
+
+#[test]
+fn a_citation_after_a_status_other_than_done_is_read_and_ignored() {
+    assert_eq!(flow::render(OTHER_CITED, 40, &UNI), ["✗ one  A─▶B  09:02  ◀ here", "● two  B─▶A"]);
+    for w in [60, 100] {
+        assert_eq!(gutters(OTHER_CITED, w, &UNI), ["▶✗", " ●"], "w={w}");
+    }
+}
+
+#[test]
+fn a_citation_is_7_to_40_hex_digits_or_a_hash_and_digits_and_anything_else_is_not_drawn() {
+    let hex40 = "0123456789abcdef0123456789abcdef01234567";
+    let rows = [
+        ("7 hex", "09:02 abc1234".to_string(), true),
+        ("40 hex", format!("09:02 {hex40}"), true),
+        ("upper case hex", "09:02 ABCDEF0".into(), true),
+        ("a number", "09:02 #1".into(), true),
+        ("a number, no time", "#1611".into(), true),
+        ("6 hex", "09:02 abc123".into(), false),
+        ("41 hex", format!("09:02 {hex40}8"), false),
+        ("not hex", "09:02 abc123g".into(), false),
+        ("a hash alone", "09:02 #".into(), false),
+        ("a letter after the hash", "09:02 #12a".into(), false),
+        ("a word before the hash", "09:02 PR#12".into(), false),
+        ("before the time", "#1 09:02".into(), false),
+        ("two citations", "09:02 #1 #2".into(), false),
+    ];
+    let wrong: Vec<&str> = rows
+        .iter()
+        .filter(|(_, tail, drawn)| {
+            let out = flow::render(&format!("sequenceDiagram\nA->>B: x\n%% status: ✓ {tail}\n"), 40, &UNI);
+            out[0].starts_with("(not drawn") == *drawn
+        })
+        .map(|(row, _, _)| *row)
+        .collect();
+    assert!(wrong.is_empty(), "wrong: {wrong:?}");
+}
+
+#[test]
+fn the_ascii_tier_draws_claimed_as_a_question_mark_and_done_as_a_plus() {
+    assert_eq!(
+        flow::render(MIXED, 40, &ASC),
+        ["? one    A->B  09:02", "+ two    B->A", "* three  A->B  < here"]
+    );
+    for w in [60, 100] {
+        let out = flow::render(MIXED, w, &ASC);
+        assert!(out.iter().all(|l| l.is_ascii()), "w={w}: {out:?}");
+        assert_eq!(gutters(MIXED, w, &ASC), [" ?", " +", ">*"], "w={w}");
+    }
 }
 
 // ------------------------------------ decision 4: two rows a step, label above
@@ -463,7 +562,7 @@ fn a_cut_label_ends_a_blank_cell_before_the_next_lifeline() {
 #[test]
 fn a_label_right_of_the_last_lifeline_keeps_its_room_to_the_time_column() {
     // No lifeline right of B's at 40: 12 columns from 42 to 53, column 54 blank, the time at 55.
-    let row = format!(" ✓{}│{}│ a self step… 09:00", " ".repeat(13), " ".repeat(24));
+    let row = format!(" ?{}│{}│ a self step… 09:00", " ".repeat(13), " ".repeat(24));
     assert_eq!(flow::render(LAST_SELF, 60, &UNI)[1], row);
 }
 
@@ -1341,7 +1440,7 @@ fn a_wrapped_lead_note_in_the_list_marks_only_its_first_row() {
 fn the_status_key_is_read_in_any_case() {
     for (row, line) in [("Status", "%% Status: done"), ("STATUS", "%% STATUS: ✓ 09:02")] {
         let f = parsed(&format!("sequenceDiagram\nA->>B: x\n{line}\n"));
-        assert_eq!(f.steps[0].status, Some(Status::Done), "{row}");
+        assert_eq!(f.steps[0].status, Some(Status::Claimed), "{row}");
     }
     assert!(flow::parse("sequenceDiagram\nA->>B: x\n%% Status: maybe\n").is_err());
 }

@@ -198,13 +198,14 @@ pub struct Glyphs {
     pub key_right: &'static str,
     pub key_updown: &'static str,
     /// The flow renderer's marks (#935), with `plain` for its box, lifelines,
-    /// solid shafts and frames: a failed and a needs step, a dashed shaft, the
-    /// filled and the open arrow heads each way and a cross head (#1532), a
-    /// self step's turn and return, a note, what a control character left in
-    /// a drawn line becomes, and a frame divider's ends and a lifeline crossing
-    /// a frame's rule (#1536).
+    /// solid shafts and frames: a failed and a needs step, a step claimed done
+    /// with no citation (#1611), a dashed shaft, the filled and the open arrow
+    /// heads each way and a cross head (#1532), a self step's turn and return,
+    /// a note, what a control character left in a drawn line becomes, and a
+    /// frame divider's ends and a lifeline crossing a frame's rule (#1536).
     pub step_failed: &'static str,
     pub step_needs: &'static str,
+    pub claimed: &'static str,
     pub dashed: &'static str,
     pub head_right: &'static str,
     pub head_left: &'static str,
@@ -288,6 +289,7 @@ impl Glyphs {
             key_updown: "↑↓",
             step_failed: "✗",
             step_needs: "!",
+            claimed: "?",
             dashed: "┄",
             head_right: "▶",
             head_left: "◀",
@@ -349,6 +351,7 @@ impl Glyphs {
             key_updown: "up/dn",
             step_failed: "x",
             step_needs: "!",
+            claimed: "?",
             dashed: ".",
             head_right: ">",
             head_left: "<",
