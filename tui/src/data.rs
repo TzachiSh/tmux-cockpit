@@ -311,9 +311,9 @@ impl Allowance {
     }
 }
 
-/// Skips the three ages and the allowance's countdown (#1600), which change every tick and
-/// would defeat the redraw gate: `board::gate_extra` takes them as printed. Destructured so
-/// a new field fails to compile until it is placed.
+/// Skips the three ages and the whole allowance (#1600), whose countdown and age change every
+/// tick: they would defeat the redraw gate, and `board::gate_extra` takes the allowance as
+/// printed. Destructured so a new field fails to compile until it is placed.
 impl Hash for Pane {
     fn hash<H: Hasher>(&self, h: &mut H) {
         let Pane {
