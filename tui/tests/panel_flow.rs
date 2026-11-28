@@ -1473,12 +1473,25 @@ fn the_explain_prompts_example_flow_draws_whole_as_a_ladder_at_60() {
     // 60 is the ladder's floor: the example's slots only widen past it. Its parties and labels keep to the
     // budget the prompt teaches, at most 4 parties and 9 columns a label, so nothing is cut.
     let out = flow::render(body, 60, &UNI);
+    // Its done step cites a sha, so it draws done and no step is only claimed (#1617).
+    let statuses: Vec<Option<Status>> = flow::parse(body)
+        .map(|f| f.steps.iter().map(|s| s.status).collect())
+        .unwrap_or_default();
+    let in_status_column = |mark: &str| out.iter().any(|l| l.chars().skip(1).take(1).collect::<String>() == mark);
     let checks = [
         ("one mermaid fence", bodies.len() == 1),
         ("a ladder", flow::parse(body).is_ok_and(|f| flow::shape(&f, 60) == Shape::Ladder)),
         ("drawn", !out.iter().any(|l| l.starts_with("(not drawn"))),
         ("nothing dropped", !out.iter().any(|l| l.starts_with("(dropped"))),
         ("nothing cut", !out.iter().any(|l| l.contains(UNI.ellipsis))),
+        (
+            "a done step draws ✓",
+            statuses.contains(&Some(Status::Done)) && in_status_column(UNI.done),
+        ),
+        (
+            "no step claimed",
+            !statuses.contains(&Some(Status::Claimed)) && !in_status_column(UNI.claimed),
+        ),
     ];
     let failed: Vec<&str> = checks.iter().filter(|(_, ok)| !ok).map(|(name, _)| *name).collect();
     assert!(failed.is_empty(), "failed: {failed:?}\n{out:?}");
