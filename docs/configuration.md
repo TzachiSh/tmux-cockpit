@@ -74,7 +74,8 @@ set -g @cockpit_accounts "p1=~/.claude p2=~/.claude-2 p3=~/.claude-3 work=~/.cla
 - The name is that of the dir the pane's hooks saw, `@cockpit_cfg`. A pane whose hooks saw none
   runs on `~/.claude`. With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no dir at all,
   so the tile shows `?` and never guesses the default
-  ([Agent view and background jobs](states-and-hooks.md#agent-view-and-background-jobs)).
+  ([Agent view and background jobs](states-and-hooks.md#agent-view-and-background-jobs)). So
+  it does for a dir with a control character in it, which the hooks cannot record.
 - The board reads a transcript under the `projects` dir of any listed account, after its
   own, so a pane on another account keeps its doing line, model, context and subagents.
 

@@ -268,9 +268,9 @@ pub struct Pane {
     /// shape, or no window of it is still open
     pub allow: Option<Allowance>,
     /// #1601: the name of the account in `@cockpit_accounts` whose dir the pane's claude uses,
-    /// from the hooks' `@cockpit_cfg` (field 22); `?` when they ran under Claude Code's env
-    /// scrub and saw no dir (field 23). `None` with no account listed, none with that dir, or
-    /// no hook state on the pane
+    /// from the hooks' `@cockpit_cfg` (field 22); `?` when they could not record that dir:
+    /// Claude Code's env scrub hid it, or it holds a control character (field 23). `None` with no
+    /// account listed, none with that dir, or no hook state on the pane. Set by the fetch only
     pub account: Option<String>,
 }
 
@@ -1156,6 +1156,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         (p.pinned, p.delivered) = spool_counts(&p.spool);
         p.subs_n = f[14].parse().unwrap_or(0);
         p.topic = topic_of(f[17]);
+        p.account = account_of(&f);
         if let Some(d) = subagents::dir_of(f[15], &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());
         }
@@ -1223,12 +1224,6 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         job: crate::pick::clean(f[16]).trim().to_string(),
         role: role_of(f),
         allow: Allowance::parse(f[21], sessions::now()),
-        // #1601: a pane the hooks never marked has no record of its dir
-        account: if raw.is_empty() {
-            None
-        } else {
-            accounts::name_of(f[22], f[23] == "1")
-        },
         ..Default::default()
     };
     let by = if by_cmd {
@@ -1256,6 +1251,17 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> Candidates {
 /// `declared` and `hook_cwd` off a FIELDS row's @cockpit_dir (13) and @cockpit_cwd (19).
 fn row_options(f: &[&str]) -> Candidates {
     Candidates::from_options(f[13], f[19])
+}
+
+/// #1601: the pane's account off a FIELDS row's @cockpit_cfg (22) and @cockpit_cfg_unseen (23);
+/// none for a pane the hooks never marked, @panestate (4) unset, as it has no record of its dir.
+/// Only the fetch reads it, the one caller that draws it.
+fn account_of(f: &[&str]) -> Option<String> {
+    if unsentinel(f[4]).is_empty() {
+        None
+    } else {
+        accounts::name_of(f[22], f[23] == "1")
+    }
 }
 
 /// The pane's name off a FIELDS row's @cockpit_role (20), #1409. The setter allows only

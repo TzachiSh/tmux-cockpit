@@ -2744,10 +2744,11 @@ printed, so the countdown moves on screen while the fleet is quiet. `--json` and
 **`account` (#1601):** the name of the account in `@cockpit_accounts` whose dir the pane's claude
 uses. That dir is the hooks' `@cockpit_cfg` (FIELDS' field 22), or `~/.claude` when they recorded
 none, and both sides are resolved, symlinks followed, before they are compared. `?` when the
-hooks marked the pane `@cockpit_cfg_unseen` (field 23): they ran under Claude Code's env scrub and
-saw no dir, so the default is not assumed. `None` with no account listed, none with that dir,
-or no `@panestate` on the pane. The tile's bottom border draws it first, and the rows' hash takes
-it. `--json` and `--rows` do not carry it.
+hooks marked the pane `@cockpit_cfg_unseen` (field 23): they could not record its dir, as Claude
+Code's env scrub hid it or it holds a control character, so the default is not assumed. `None`
+with no account listed, none with that dir, or no `@panestate` on the pane. Only the fetch sets
+it. The tile's bottom border draws it first, and the rows' hash takes it. `--json` and `--rows`
+do not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 

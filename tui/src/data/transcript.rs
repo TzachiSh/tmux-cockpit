@@ -9,19 +9,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
-/// Claude Code's projects directory: `projects` in [`super::claude_config_dir`], else
-/// `~/.claude/projects`.
+/// Claude Code's projects directory, [`projects_of`] the board's config dir: [`super::claude_config_dir`],
+/// else `~/.claude`.
 pub(crate) fn projects_dir() -> PathBuf {
-    super::claude_config_dir()
-        .unwrap_or_else(super::default_config_dir)
-        .join("projects")
+    projects_of(&super::claude_config_dir().unwrap_or_else(super::default_config_dir))
+}
+
+/// Where a Claude Code config dir keeps its transcripts, one dir per project.
+fn projects_of(cfg: &Path) -> PathBuf {
+    cfg.join("projects")
 }
 
 /// The projects dirs a transcript is read under: [`projects_dir`], then each account's in
 /// `@cockpit_accounts`, in its order (#1601). A pane on another account writes its transcript
 /// under that account's dir, which the board's environment does not name.
 fn roots() -> Vec<PathBuf> {
-    std::iter::once(projects_dir()).chain(super::accounts::projects()).collect()
+    let listed = super::accounts::dirs();
+    std::iter::once(projects_dir())
+        .chain(listed.iter().map(|d| projects_of(d)))
+        .collect()
 }
 
 /// `path` as a regular file inside `root`, symlinks resolved, or None. The hooks check the

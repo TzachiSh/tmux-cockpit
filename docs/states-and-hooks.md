@@ -529,21 +529,21 @@ fires no window event. `@cockpit_bg_poll off` never starts it, and neither does 
 notification run with `COCKPIT_NO_AUTOSTART` set, the switch for tests and probes
 (docs/testing.md, #1111). No foreground hook starts it, so a plain `Stop` costs what it did.
 
-**One poller per config dir.** A pane's hooks run with the `CLAUDE_CONFIG_DIR` its
-`claude` uses, so each hook records it on the pane as `@cockpit_cfg`, and a pane on
-another dir is polled against that dir's agents by a poller of its own, in
-`@cockpit_poll_pid_<cksum>` beside `@cockpit_poll_dir_<cksum>`. The dir is compared as
-`claude` got it, never normalised or resolved: two spellings of one dir give two
-pollers, which is harmless. A dir that ends in `;` is recorded whole; one with a
-control character in it cannot be: its pane is left on the default dir, and the default
-poller polls it, which `@cockpit_poll_err` says. A relayed agent notification starts
-that poller if none runs (#685). A dir's poller leaves after three ticks with none of its
-panes, and a sweep takes back the slot of one that is gone. Two dirs on one cksum never
-share a slot: the second starts none, and says so in `@cockpit_poll_err`. With no
-`CLAUDE_CONFIG_DIR` anywhere nothing changes: one poller, `@cockpit_poll_pid`, the same
-number of tmux calls. One thing does: a pane whose hook saw no `CLAUDE_CONFIG_DIR` is polled
-against the default dir, never the tmux server's own value, which is what that pane's
-`claude` reads (#194).
+**One poller per config dir.** A pane's hooks run with the `CLAUDE_CONFIG_DIR` its `claude`
+uses, so each hook records it on the pane as `@cockpit_cfg`, and a pane on another dir is
+polled against that dir's agents by a poller of its own, in `@cockpit_poll_pid_<cksum>` beside
+`@cockpit_poll_dir_<cksum>`. The dir is compared as `claude` got it, never normalised or
+resolved: two spellings of one dir give two pollers, which is harmless. A dir that ends in `;`
+is recorded whole; one with a control character in it cannot be: its pane is left on the
+default dir, and the default poller polls it, which `@cockpit_poll_err` says. The hook also
+marks that pane `@cockpit_cfg_unseen 1`, so the board names no account for it (#1601). A
+relayed agent notification starts that poller if none runs (#685). A dir's poller leaves after
+three ticks with none of its panes, and a sweep takes back the slot of one that is gone. Two
+dirs on one cksum never share a slot: the second starts none, and says so in
+`@cockpit_poll_err`. With no `CLAUDE_CONFIG_DIR` anywhere nothing changes: one poller,
+`@cockpit_poll_pid`, the same number of tmux calls. One thing does: a pane whose hook saw no
+`CLAUDE_CONFIG_DIR` is polled against the default dir, never the tmux server's own value, which
+is what that pane's `claude` reads (#194).
 
 **Claude Code's env scrub hides the dirs.** With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on (`1`,
 `true`, `yes` or `on`, in any case), Claude Code removes `CLAUDE_CONFIG_DIR` and the XDG
@@ -559,13 +559,13 @@ misses the hooks' events (see [Subagent event log](#subagent-event-log)), and th
 no dir says so in `@cockpit_poll_err`, but only when that holds nothing else, so it replaces no
 other message.
 Since that option is global, a later hook in any pane that sees the scrub off, or sees a dir,
-takes the message back. It takes back only that message (#1429). Such a hook also marks its
-pane, `@cockpit_cfg_unseen 1`, in the same call, and a hook in that pane that sees the scrub off or
-a dir takes the mark back: the board then shows `?` for the pane's account, since its dir is not
-known to be the default (#1601). Claude Code also turns the
-scrub on under GitHub Actions unless it is `0`, `false`, `no` or `off`, and the hook says
-nothing there. To keep a custom dir or state folder, set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or
-leave it unset.
+takes the message back. It takes back only that message (#1429). A hook that sees the scrub on
+and no dir also marks its pane, `@cockpit_cfg_unseen 1`, in the same call, and a hook in that
+pane that sees the scrub off or a dir takes the mark back: the board then shows `?` for the
+pane's account, since its dir is not known to be the default (#1601). Claude Code also turns
+the scrub on under GitHub Actions unless it is `0`, `false`, `no` or `off`, and the hook
+says nothing there. To keep a custom dir or state folder, set
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0` or leave it unset.
 
 Each tick is two tmux reads (the interval option and `list-panes -a`) and a sleep, a few
 milliseconds. `claude agents`, about 0.3 s,
@@ -698,13 +698,12 @@ a byte at a time. `review-gate` reads the `Stop` payload's whole line with `head
 (#315). Claude sends the ids
 first; one past the cap, or cut by it, is skipped and the old value stays. The hook checks
 the path against the projects tree of the `CLAUDE_CONFIG_DIR` claude runs with; the reader
-uses its own environment's (usually the tmux server's), then each one `@cockpit_accounts` lists
-(#1601). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`
-on, the hook sees no `CLAUDE_CONFIG_DIR` and checks against `~/.claude/projects`, so it refuses
-a transcript under a custom dir ([Agent view and background jobs](#agent-view-and-background-jobs),
-#1429). Export `CLAUDE_CONFIG_DIR` where tmux
-starts, not only in a shell, or the reader refuses the stored path and falls back to
-`@cockpit_session`.
+uses its own environment's (usually the tmux server's), then each one `@cockpit_accounts`
+lists (#1601). With `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hook sees no
+`CLAUDE_CONFIG_DIR` and checks against `~/.claude/projects`, so it refuses a transcript under
+a custom dir ([Agent view and background jobs](#agent-view-and-background-jobs), #1429).
+Export `CLAUDE_CONFIG_DIR` where tmux starts, not only in a shell, or the reader refuses the
+stored path and falls back to `@cockpit_session`.
 
 ## Working tree
 

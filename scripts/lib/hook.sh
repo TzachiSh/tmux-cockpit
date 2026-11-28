@@ -174,8 +174,8 @@ SCRUB_MSG="$SCRUB_MSG and subagent state goes to the default state dir"
 # the write is due, and SCRUB_DO, the write, for if-shell -F. The scrub on and no dir seen: the
 # message, only into an empty slot, so it replaces no other. Else that message is taken back, and
 # only that one. The slot is global, so a hook in any pane may take it back. SCRUB_UNSEEN, 1 when
-# the scrub hid this hook's dir, is the pane's @cockpit_cfg_unseen: the board then names no
-# account for the pane, since its dir is not known to be the default (#1601).
+# the scrub hid this hook's dir, sets the pane's @cockpit_cfg_unseen, as a dir cfg_arg refuses
+# does: the board then names no account for the pane, its dir not known to be the default (#1601).
 scrub_note() {
     if [ -z "${CLAUDE_CONFIG_DIR:-}" ] && scrub_on; then
         SCRUB_UNSEEN=1
@@ -281,12 +281,12 @@ mark_agentview() {            # <pane> <scripts dir>
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
     [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
-    # The config dir this pane's claude uses, and the scrub's mark that it is not known (#1601),
-    # written only when either changed (#194). One that cannot be recorded leaves the pane on
-    # none, and says so. The pane's dir goes last: a cut option name ends the list there (#1450),
+    # The config dir this pane's claude uses, and the mark that it is not known (#1601), written
+    # only when either changed (#194). One that cannot be recorded leaves the pane on none, marks
+    # it, and says so. The pane's dir goes last: a cut option name ends the list there (#1450),
     # and the next hook runs it again only while the pane's dir or mark differs.
     if [ -n "$bad" ]; then
-        tmux set-option -pqu -t "$1" @cockpit_cfg_unseen \; \
+        tmux set-option -p -t "$1" @cockpit_cfg_unseen 1 \; \
             set-option -pu -t "$1" @cockpit_cfg \; \
             set-option -g @cockpit_poll_err "$CFG_BAD" 2>/dev/null
     elif [ "$cfg" != "$dir" ] || [ "$unseen" != "$SCRUB_UNSEEN" ]; then

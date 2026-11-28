@@ -72,9 +72,9 @@ pub(crate) fn name_of(cfg: &str, unseen: bool) -> Option<String> {
     })
 }
 
-/// Each listed account's `projects` dir, in the option's order.
-pub(crate) fn projects() -> Vec<PathBuf> {
-    LISTED.with(|l| l.iter().map(|(_, d)| d.join("projects")).collect())
+/// Each listed account's dir, resolved, in the option's order.
+pub(crate) fn dirs() -> Vec<PathBuf> {
+    LISTED.with(|l| l.iter().map(|(_, d)| d.clone()).collect())
 }
 
 #[cfg(test)]
