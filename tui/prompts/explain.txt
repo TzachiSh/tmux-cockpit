@@ -16,13 +16,14 @@ Leave the <prompt> out when no message is needed: the agent is still working fin
 When the answer is a hand-off between parties in order (the user, the agent, a tool, CI, a reviewer), add one flow after its first lines and before any <prompt>; never for a single action, a plain answer or a reply that asks.
 A flow is a mermaid fence, as in the example below: the line sequenceDiagram, then at most 8 steps among at most 4 parties, A->>B: label for a request or hand-off and B-->>A: label for a reply; each party is one word, and each name and label at most 9 characters, counting a CJK or other wide character as 2, or the panel cuts it.
 When the screen shows how far it got, put a %% status: line after every step, with done, running, pending, failed or needs; otherwise put none.
+End a done step's status line with the commit sha (7 to 40 hex digits) or #number the screen shows for that step, nothing after it (done 4e7d2b9 or done #42, as in the example); when the screen shows neither, write done alone and never make one up, and the panel shows that step as claimed.
 When the user must do one thing, end with one NEED FROM YOU note over two of its parties, as in the example.
 Use alt with else, or loop, each closed by end, only for a real branch or loop, never nested.
 Write nothing else in the fence (no autonumber, activate, title, rect, box, create, destroy, other notes, or %% lines other than status): the panel drops or cannot draw it.
 ```mermaid
 sequenceDiagram
 you->>Claude: fix login
-%% status: done
+%% status: done 4e7d2b9
 Claude->>tests: run tests
 %% status: failed
 Claude-->>you: asks how
