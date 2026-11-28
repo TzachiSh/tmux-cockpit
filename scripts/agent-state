@@ -649,6 +649,12 @@ if [ -n "$fgown" ]; then
             || unmark+=(set-option -gq @cockpit_poll_err "${CFG_BAD:-}" ';')
     fi
     [ -z "$scrub" ] || unmark+=(if-shell -F -t "$pane" "$SCRUB_IF" "$SCRUB_DO" ';')
+    # The scrub hid the dir: the pane is marked, so the board names no account for it (#1601).
+    if [ -n "$scrub" ] && [ -n "$SCRUB_UNSEEN" ]; then
+        unmark+=(set-option -pq -t "$pane" @cockpit_cfg_unseen 1 ';')
+    elif [ -n "$scrub" ]; then
+        unmark+=(set-option -pqu -t "$pane" @cockpit_cfg_unseen ';')
+    fi
 fi
 # The session's end puts @cockpit_dir back to the value `session` recorded at its start (#323):
 # what the hooks and the agent set goes, a dir set by hand before the agent started stays.

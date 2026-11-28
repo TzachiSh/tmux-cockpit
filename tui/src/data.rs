@@ -2,6 +2,8 @@
 // the one rule for a pane that runs Claude Code (#1359)
 pub mod agentid;
 pub mod agents;
+// the owner's accounts, @cockpit_accounts (#1601)
+mod accounts;
 pub mod fleet;
 // the board's transcript fold (#492)
 mod activein;
@@ -32,6 +34,12 @@ pub(crate) fn claude_config_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|d| !d.is_empty())
         .map(std::path::PathBuf::from)
+}
+
+/// Claude Code's default config dir, `~/.claude`: the board's own when [`claude_config_dir`] is
+/// `None`, and that of a pane whose hooks saw no `CLAUDE_CONFIG_DIR` (#1601).
+pub(crate) fn default_config_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}/.claude", std::env::var("HOME").unwrap_or_default()))
 }
 
 pub fn tmux_argv() -> Vec<String> {
@@ -259,6 +267,11 @@ pub struct Pane {
     /// (field 21), as the fetch saw it; `None` when the pane has none, it is not the shim's
     /// shape, or no window of it is still open
     pub allow: Option<Allowance>,
+    /// #1601: the name of the account in `@cockpit_accounts` whose dir the pane's claude uses,
+    /// from the hooks' `@cockpit_cfg` (field 22); `?` when they ran under Claude Code's env
+    /// scrub and saw no dir (field 23). `None` with no account listed, none with that dir, or
+    /// no hook state on the pane
+    pub account: Option<String>,
 }
 
 /// #1600: one window of a status line reading, at the fetch: the share used, in whole
@@ -352,13 +365,14 @@ impl Hash for Pane {
             ctx,
             role,
             allow: _,
+            account,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
             model, role,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed, ctx, account).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -1039,6 +1053,10 @@ const FIELDS: &str = concat!(
     // #1600: 21 the allowance scripts/agent-context writes from the status line. Last, so no
     // reader of 14 to 20 moves.
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_rl}}}}",
+    // #1601: 22 the config dir the hooks saw, 23 their mark that the env scrub hid it. Last,
+    // so no reader of 14 to 21 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cfg}}}}",
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_cfg_unseen}}}}",
 );
 
 /// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
@@ -1205,6 +1223,12 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         job: crate::pick::clean(f[16]).trim().to_string(),
         role: role_of(f),
         allow: Allowance::parse(f[21], sessions::now()),
+        // #1601: a pane the hooks never marked has no record of its dir
+        account: if raw.is_empty() {
+            None
+        } else {
+            accounts::name_of(f[22], f[23] == "1")
+        },
         ..Default::default()
     };
     let by = if by_cmd {

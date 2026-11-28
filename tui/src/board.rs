@@ -554,17 +554,27 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     f.render_widget(para, body);
 }
 
-/// The card's bottom border: the allowance, then the model and the context, else the
-/// allowance alone, else the context alone, each whole in `w` or not at all (#1330 A2, #1600).
+/// The card's bottom border: the account and its allowance, then the model and the context,
+/// else the account and its allowance alone, else the context alone, each whole in `w` or not
+/// at all (#1330 A2, #1600, #1601).
 fn tile_foot(p: &Pane, g: &Glyphs, w: usize) -> Option<String> {
-    let allow = p.allow.as_ref().map(|a| allow_text(a, g.dot));
+    let acct = acct_text(p, g.dot);
     let ctx = ctx_text(p, g);
-    let both = allow.as_ref().zip(ctx.as_ref()).map(|(a, c)| format!("{a} {} {c}", g.dot));
-    [both, allow, ctx]
+    let both = acct.as_ref().zip(ctx.as_ref()).map(|(a, c)| format!("{a} {} {c}", g.dot));
+    [both, acct, ctx]
         .into_iter()
         .flatten()
         .map(|s| format!(" {s} "))
         .find(|s| s.width() <= w)
+}
+
+/// #1601: the pane's account name, then its allowance (#1600); `None` with neither.
+fn acct_text(p: &Pane, dot: &str) -> Option<String> {
+    let parts: Vec<String> = [p.account.clone(), p.allow.as_ref().map(|a| allow_text(a, dot))]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(format!(" {dot} ").as_str()))
 }
 
 /// #1330 A2: `opus · 84k`, the model cut at 12 columns and the context floored to

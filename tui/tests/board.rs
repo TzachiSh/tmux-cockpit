@@ -1191,6 +1191,18 @@ fn the_gate_redraws_when_the_printed_countdown_moves() {
     assert_eq!(extra(&a, &pvs), extra(&sooner, &pvs), "2h10m30s and 2h10m29s both print 2h10m");
 }
 
+/// #1601: the rows' hash takes the account, so a pane that moved to another one redraws.
+#[test]
+fn the_rows_hash_takes_the_account() {
+    use cockpit_tui::data::hash_rows;
+    let on = |name: &str| {
+        let mut ps = fixture();
+        ps[0].account = Some(name.to_string());
+        ps
+    };
+    assert_ne!(hash_rows(&on("p1"), ""), hash_rows(&on("p2"), ""));
+}
+
 /// Every SGR parameter crossterm emitted, in order.
 fn sgr_params(bytes: &[u8]) -> Vec<u16> {
     let s = String::from_utf8_lossy(bytes).into_owned();
