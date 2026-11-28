@@ -240,6 +240,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
 | `@cockpit_board_return` | `on` | `off` makes `r` and `f` one-way: the board closes and stays closed, as before the return trip. Read by `scripts/cockpit-board` after each action |
+| `@cockpit_accounts` | unset | `name=dir` pairs, the owner's Claude Code accounts (docs/configuration.md, Accounts). Read once, when the board starts: the tile names a pane's account (the `account` field below), and the transcript reader looks under each account's `projects` after its own. One bad entry refuses the list, and the log (`COCKPIT_LOG`) says why |
 | `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
@@ -264,7 +265,9 @@ already makes, and each board pulls its next tick forward. See "Push wakeups".
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
 `@cockpit_role` (a pane's own name, which `scripts/tmux-rename pane` writes),
-`@panestate_rl` (the allowance `scripts/agent-context` writes), `@thm_*`.
+`@panestate_rl` (the allowance `scripts/agent-context` writes),
+`@cockpit_cfg` and `@cockpit_cfg_unseen` (the config dir the hooks saw, and their mark that the env
+scrub hid it), `@thm_*`.
 
 ## Environment
 
@@ -2421,6 +2424,17 @@ panel with the reason in a warn note.
 - The tile's bottom border puts the allowance before ` opus · 84k `. When both do not
   fit, the allowance shows alone, and when it does not fit either, the context alone.
 
+### Contract changes for accounts (#1601)
+
+- FIELDS gains field 22, `@cockpit_cfg`, and field 23, `@cockpit_cfg_unseen`, and `data::Pane` gains
+  `account: Option<String>` (the `account` field below). `--json` and `--rows` are unchanged.
+- The transcript reader looks under the board's own projects dir, then under each account's
+  in `@cockpit_accounts`, in the option's order. Each step runs across the dirs before the next:
+  the option's path, then the cwd's slug, then the glob.
+- The tile's bottom border puts the account name before the allowance,
+  ` p2 · 5h 58% 2h10m · 7d 82% 3d · opus · 84k `. The name and the allowance show together or
+  not at all, and the fit order is as before.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -2726,6 +2740,15 @@ its age, ` · 12m ago`, counted from the minute the shim stamped, so it can read
 minute high. The rows' hash skips the whole allowance, and the redraw gate takes it as
 printed, so the countdown moves on screen while the fleet is quiet. `--json` and
 `--rows` do not carry it.
+
+**`account` (#1601):** the name of the account in `@cockpit_accounts` whose dir the pane's claude
+uses. That dir is the hooks' `@cockpit_cfg` (FIELDS' field 22), or `~/.claude` when they recorded
+none, and both sides are resolved, symlinks followed, before they are compared. `?` when the
+hooks marked the pane `@cockpit_cfg_unseen` (field 23): they could not record its dir, as Claude
+Code's env scrub hid it or it holds a control character, so the default is not assumed. `None`
+with no account listed, none with that dir, or no `@panestate` on the pane. Only the fetch sets
+it. The tile's bottom border draws it first, and the rows' hash takes it. `--json` and `--rows`
+do not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 

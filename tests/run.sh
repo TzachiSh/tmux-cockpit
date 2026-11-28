@@ -29068,6 +29068,7 @@ PEMSG="a config dir with a control character is not used: its pane is polled on 
 PESCRUB="with CLAUDE_CODE_SUBPROCESS_ENV_SCRUB on the hooks see no CLAUDE_CONFIG_DIR and no"
 PESCRUB="$PESCRUB XDG_STATE_HOME so their panes are polled on the default dir and their review"
 PESCRUB="$PESCRUB and subagent state goes to the default state dir"
+pe_unseen() { "$TMUX_REAL" -L "$PES" show-option -pqv -t "$PEP" @cockpit_cfg_unseen; }
 pe_slot() {                   # pe_slot <cfg> <poll_err>: each empty is unset
     if [ -n "$1" ]; then "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$1"
     else "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg; fi
@@ -29080,10 +29081,12 @@ for pesite in pe_hook pe_mark; do
     is "$pesite: a dir ending in ; is recorded whole" "$PE/c;" "$(pe_cfg)"
     for pebad in "newline:$PENL" "tab:$PETAB"; do
         "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg "$PE/old" \; \
-            set-option -gu @cockpit_poll_err
+            set-option -gu @cockpit_poll_err \; set-option -pu -t "$PEP" @cockpit_cfg_unseen
         $pesite CLAUDE_CONFIG_DIR="$PE/a${pebad#*:}b"
         is "$pesite: a dir with a ${pebad%%:*} in it is not recorded, and said" \
            "|$PEMSG" "$(pe_cfg)|$(pe_err)"
+        is "$pesite: ...a ${pebad%%:*} in the dir marks the pane, its dir not known (#1601)" \
+           "1" "$(pe_unseen)"
     done
     # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB takes CLAUDE_CONFIG_DIR and XDG_STATE_HOME out of the hooks'
     # env (#1429, #1438). A hook that sees it on and no dir says so, only into an empty slot. A
@@ -29116,6 +29119,20 @@ for pesite in pe_hook pe_mark; do
     $pesite CLAUDE_CONFIG_DIR="$PE/d" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
     is "$pesite: a dir seen with the scrub on is recorded, and the scrub message taken back" \
        "$PE/d|" "$(pe_cfg)|$(pe_err)"
+    # #1601: with the scrub on and no dir, the pane is marked, so the board names no account
+    # for it; a hook that sees the scrub off, or a dir, takes the mark back. Each starts from
+    # the @cockpit_cfg the hook writes, so only the mark differs.
+    pe_slot "" ""; "$TMUX_REAL" -L "$PES" set-option -pu -t "$PEP" @cockpit_cfg_unseen
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+    is "$pesite: the scrub on and no dir marks the pane's dir unseen (#1601)" \
+       "|1" "$(pe_cfg)|$(pe_unseen)"
+    "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg_unseen 1
+    $pesite CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0
+    is "$pesite: ...a hook that sees the scrub off takes the mark back (#1601)" \
+       "|" "$(pe_cfg)|$(pe_unseen)"
+    pe_slot "$PE/d" ""; "$TMUX_REAL" -L "$PES" set-option -p -t "$PEP" @cockpit_cfg_unseen 1
+    $pesite CLAUDE_CONFIG_DIR="$PE/d" CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+    is "$pesite: ...and so does one that sees a dir (#1601)" "$PE/d|" "$(pe_cfg)|$(pe_unseen)"
 done
 "$TMUX_REAL" -L "$PES" kill-server
 rm -rf "$PE"

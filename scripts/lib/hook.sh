@@ -173,12 +173,16 @@ SCRUB_MSG="$SCRUB_MSG and subagent state goes to the default state dir"
 # What this hook does to @cockpit_poll_err for the scrub: SCRUB_IF, a format that reads 1 when
 # the write is due, and SCRUB_DO, the write, for if-shell -F. The scrub on and no dir seen: the
 # message, only into an empty slot, so it replaces no other. Else that message is taken back, and
-# only that one. The slot is global, so a hook in any pane may take it back.
+# only that one. The slot is global, so a hook in any pane may take it back. SCRUB_UNSEEN, 1 when
+# the scrub hid this hook's dir, sets the pane's @cockpit_cfg_unseen, as a dir cfg_arg refuses
+# does: the board then names no account for the pane, its dir not known to be the default (#1601).
 scrub_note() {
     if [ -z "${CLAUDE_CONFIG_DIR:-}" ] && scrub_on; then
+        SCRUB_UNSEEN=1
         SCRUB_IF='#{?#{@cockpit_poll_err},0,1}'
         SCRUB_DO="set-option -g @cockpit_poll_err '$SCRUB_MSG'"
     else
+        SCRUB_UNSEEN=""
         SCRUB_IF="#{==:#{@cockpit_poll_err},$SCRUB_MSG}"
         SCRUB_DO='set-option -gu @cockpit_poll_err'
     fi
@@ -262,33 +266,40 @@ EOT
 # pane and makes sure one poller runs on this server. Costs one tmux read and, with the
 # poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
 mark_agentview() {            # <pane> <scripts dir>
-    local info view fg pid every scrub cfg key arg="" bad="" dir=${CLAUDE_CONFIG_DIR:-}
+    local info view fg pid every scrub unseen cfg key arg="" bad="" dir=${CLAUDE_CONFIG_DIR:-}
     # A dir cfg_arg refuses is not used: the pane is the default dir's, and that poller starts.
     [ -z "$dir" ] || arg=$(cfg_arg "$dir") || { bad=1; dir=""; }
     key=$(poll_key "$dir") || return 0
     scrub_note
     info="#{@cockpit_agentview}|#{@cockpit_fg}|#{$(poll_slot "$key")}|#{@cockpit_bg_poll}"
-    info=$(tmux display-message -p -t "$1" "$info|$SCRUB_IF|#{@cockpit_cfg}" 2>/dev/null) \
-        || return 0
+    info="$info|$SCRUB_IF|#{@cockpit_cfg_unseen}|#{@cockpit_cfg}"
+    info=$(tmux display-message -p -t "$1" "$info" 2>/dev/null) || return 0
     view=${info%%|*}; info=${info#*|}; fg=${info%%|*}; info=${info#*|}
     pid=${info%%|*}; info=${info#*|}; every=${info%%|*}; info=${info#*|}
-    scrub=${info%%|*}; cfg=${info#*|}
+    scrub=${info%%|*}; info=${info#*|}; unseen=${info%%|*}; cfg=${info#*|}
     [ "$every" = off ] && return 0
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
     [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
-    # The config dir this pane's claude uses, written only when it changed (#194). One that
-    # cannot be recorded leaves the pane on none, and says so. The pane's dir goes last: a cut
-    # option name ends the list there (#1450), and the next hook runs it again only while the
-    # pane's dir differs.
+    # The config dir this pane's claude uses, and the mark that it is not known (#1601), written
+    # only when either changed (#194). One that cannot be recorded leaves the pane on none, marks
+    # it, and says so. The pane's dir goes last: a cut option name ends the list there (#1450),
+    # and the next hook runs it again only while the pane's dir or mark differs.
     if [ -n "$bad" ]; then
-        tmux set-option -pu -t "$1" @cockpit_cfg \; \
+        tmux set-option -p -t "$1" @cockpit_cfg_unseen 1 \; \
+            set-option -pu -t "$1" @cockpit_cfg \; \
             set-option -g @cockpit_poll_err "$CFG_BAD" 2>/dev/null
-    elif [ "$cfg" != "$dir" ]; then
-        if [ -z "$dir" ]; then tmux set-option -pu -t "$1" @cockpit_cfg 2>/dev/null
+    elif [ "$cfg" != "$dir" ] || [ "$unseen" != "$SCRUB_UNSEEN" ]; then
+        if [ -n "$SCRUB_UNSEEN" ]; then
+            tmux set-option -p -t "$1" @cockpit_cfg_unseen 1 \; \
+                set-option -pqu -t "$1" @cockpit_cfg 2>/dev/null
+        elif [ -z "$dir" ]; then
+            tmux set-option -pqu -t "$1" @cockpit_cfg_unseen \; \
+                set-option -pqu -t "$1" @cockpit_cfg 2>/dev/null
         else
-            tmux set-option -g @cockpit_cfg_any 1 \; set-option -p -t "$1" @cockpit_cfg "$arg" \
-                2>/dev/null
+            tmux set-option -g @cockpit_cfg_any 1 \; \
+                set-option -pqu -t "$1" @cockpit_cfg_unseen \; \
+                set-option -p -t "$1" @cockpit_cfg "$arg" 2>/dev/null
         fi
     fi
     # The scrub's message (#1429): a call only when the read said the write is due, and the

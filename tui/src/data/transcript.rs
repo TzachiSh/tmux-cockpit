@@ -9,13 +9,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
-/// Claude Code's projects directory: `projects` in [`super::claude_config_dir`], else
-/// `~/.claude/projects`.
+/// Claude Code's projects directory, [`projects_of`] the board's config dir: [`super::claude_config_dir`],
+/// else `~/.claude`.
 pub(crate) fn projects_dir() -> PathBuf {
-    match super::claude_config_dir() {
-        Some(d) => d.join("projects"),
-        None => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
-    }
+    projects_of(&super::claude_config_dir().unwrap_or_else(super::default_config_dir))
+}
+
+/// Where a Claude Code config dir keeps its transcripts, one dir per project.
+fn projects_of(cfg: &Path) -> PathBuf {
+    cfg.join("projects")
+}
+
+/// The projects dirs a transcript is read under: [`projects_dir`], then each account's in
+/// `@cockpit_accounts`, in its order (#1601). A pane on another account writes its transcript
+/// under that account's dir, which the board's environment does not name.
+fn roots() -> Vec<PathBuf> {
+    let listed = super::accounts::dirs();
+    std::iter::once(projects_dir())
+        .chain(listed.iter().map(|d| projects_of(d)))
+        .collect()
 }
 
 /// `path` as a regular file inside `root`, symlinks resolved, or None. The hooks check the
@@ -39,7 +51,8 @@ pub fn file(pane: &str, cwd: &str) -> Option<PathBuf> {
     }
     let one = |args: &[&str]| super::tmux(args).unwrap_or_default().trim_end_matches('\n').to_string();
     let opt = one(&["show-option", "-pqv", "-t", pane, "@cockpit_transcript"]);
-    if let Some(p) = under(&projects_dir(), &opt) {
+    let roots = roots();
+    if let Some(p) = roots.iter().find_map(|r| under(r, &opt)) {
         return Some(p);
     }
     let mut sid = one(&["show-option", "-pqv", "-t", pane, "@cockpit_session"]);
@@ -51,7 +64,7 @@ pub fn file(pane: &str, cwd: &str) -> Option<PathBuf> {
         sid = agents().into_iter().find(|(pid, _)| descends(*pid, pp)).map(|(_, s)| s)?;
     }
     // one look, so no memory of a miss: a session that just started is found
-    find(&projects_dir(), &opt, &sid, cwd, None)
+    find(&roots, &opt, &sid, cwd, None)
 }
 
 thread_local! {
@@ -85,29 +98,29 @@ fn slug_in(dir: &Path, sid: &str, cwd: &str) -> Option<PathBuf> {
 
 /// #500: the one transcript lookup the board, `workdir` and the info screen share,
 /// so they read the same file. In order: `opt` (@cockpit_transcript) when it resolves
-/// to a regular file under [`projects_dir`] ([`under`]: no `..`, no symlink out, since
-/// an agent can set it); else `<projects>/<cwd's slug>/<sid>.jsonl`; else the first
-/// `<projects>/*/<sid>.jsonl`, sorted, dot dirs left out. A kept find is used while its
-/// file is there, so a copy of the session that later appears in an earlier-sorting
-/// project dir is not seen until that file goes (a resumed session elsewhere; rare,
-/// and the kept file is still the session's). None for a session id that
+/// to a regular file under one of [`roots`] ([`under`]: no `..`, no symlink out, since
+/// an agent can set it); else `<projects>/<cwd's slug>/<sid>.jsonl` in each root; else the
+/// first `<projects>/*/<sid>.jsonl`, sorted, dot dirs left out, root by root. A kept find
+/// is used while its file is there, so a copy of the session that later appears in an
+/// earlier-sorting project dir is not seen until that file goes (a resumed session elsewhere;
+/// rare, and the kept file is still the session's). None for a session id that
 /// could name a path or a glob. The board polls, so its third step keeps what it found
 /// until the file is gone and a miss for [`GLOB_MISS_TTL`].
 pub(crate) fn locate(opt: &str, sid: &str, cwd: &str) -> Option<PathBuf> {
-    find(&projects_dir(), opt, sid, cwd, Some(std::time::Instant::now()))
+    find(&roots(), opt, sid, cwd, Some(std::time::Instant::now()))
 }
 
-/// [`locate`]'s steps under the projects dir `dir`. With `now`, the third step uses and
-/// fills its memory, a miss counting as fresh until `now` is [`GLOB_MISS_TTL`] past it;
+/// [`locate`]'s steps under the projects dirs `dirs`, in order. With `now`, the third step uses
+/// and fills its memory, a miss counting as fresh until `now` is [`GLOB_MISS_TTL`] past it;
 /// the clock is a parameter so a test can step it.
-fn find(dir: &Path, opt: &str, sid: &str, cwd: &str, now: Option<std::time::Instant>) -> Option<PathBuf> {
-    if let Some(p) = under(dir, opt) {
+fn find(dirs: &[PathBuf], opt: &str, sid: &str, cwd: &str, now: Option<std::time::Instant>) -> Option<PathBuf> {
+    if let Some(p) = dirs.iter().find_map(|d| under(d, opt)) {
         return Some(p);
     }
     if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         return None;
     }
-    if let Some(p) = slug_in(dir, sid, cwd).filter(|p| p.is_file()) {
+    if let Some(p) = dirs.iter().find_map(|d| slug_in(d, sid, cwd).filter(|p| p.is_file())) {
         return Some(p);
     }
     let seen = now.and_then(|_| GLOBBED.with(|c| c.borrow().get(sid).cloned()));
@@ -117,18 +130,20 @@ fn find(dir: &Path, opt: &str, sid: &str, cwd: &str, now: Option<std::time::Inst
         _ => {}
     }
     // The shell's glob: sorted, dot directories left out.
-    let mut names: Vec<_> = std::fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok().map(|e| e.file_name()))
-        .collect();
-    names.retain(|n| !n.as_bytes().starts_with(b"."));
-    names.sort();
-    let found = names
-        .into_iter()
-        .map(|n| dir.join(n).join(format!("{sid}.jsonl")))
-        .find(|p| p.is_file());
+    let found = dirs.iter().find_map(|dir| {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        names.retain(|n| !n.as_bytes().starts_with(b"."));
+        names.sort();
+        names
+            .into_iter()
+            .map(|n| dir.join(n).join(format!("{sid}.jsonl")))
+            .find(|p| p.is_file())
+    });
     if let Some(now) = now {
         GLOBBED.with(|c| {
             let mut c = c.borrow_mut();
@@ -806,20 +821,53 @@ mod tests {
     #[test]
     fn find_takes_the_option_then_the_slug_then_the_glob() {
         let (root, t) = tree();
+        let roots = [root.clone()];
         let opt = put(&root, "-x", "s1");
         let slugged = put(&root, "-w", "s1");
         put(&root, "-a", "s1");
         let o = opt.display().to_string();
-        assert_eq!(find(&root, &o, "s1", "/w", None), Some(opt), "the option");
-        assert_eq!(find(&root, "", "s1", "/w", None).as_deref(), Some(slugged.as_path()), "the slug");
+        assert_eq!(find(&roots, &o, "s1", "/w", None), Some(opt), "the option");
+        assert_eq!(find(&roots, "", "s1", "/w", None).as_deref(), Some(slugged.as_path()), "the slug");
         let out = t.0.join("out.jsonl").display().to_string();
-        assert_eq!(find(&root, &out, "s1", "/w", None).as_deref(), Some(slugged.as_path()), "outside");
+        assert_eq!(find(&roots, &out, "s1", "/w", None).as_deref(), Some(slugged.as_path()), "outside");
         let first = std::fs::canonicalize(root.join("-a/s1.jsonl")).unwrap();
-        let found = find(&root, "", "s1", "/elsewhere", None).map(|p| std::fs::canonicalize(p).unwrap());
+        let found = find(&roots, "", "s1", "/elsewhere", None).map(|p| std::fs::canonicalize(p).unwrap());
         assert_eq!(found, Some(first), "the glob, sorted: -a before -w and -x");
         // `../s1` would climb out of a project dir to this file
         std::fs::write(root.join("s1.jsonl"), "{}").unwrap();
-        assert_eq!(find(&root, "", "../s1", "/w", None), None, "a path for an id");
+        assert_eq!(find(&roots, "", "../s1", "/w", None), None, "a path for an id");
+    }
+
+    /// #1601: with a second root, an account's, each step reads the roots in order: an option
+    /// under either is taken, a slug in the first wins over one in the second and both over the
+    /// glob, the glob reads the second, and a file under neither is still refused.
+    #[test]
+    fn find_reads_each_root_in_order() {
+        let (one, t) = tree();
+        let two = t.0.join("two");
+        let roots = [one.clone(), two.clone()];
+        // the option is a file no later step would find for this session id
+        let opt = put(&two, "-x", "s0");
+        assert_eq!(find(&roots, &opt.display().to_string(), "s1", "/w", None), Some(opt), "the option");
+        // a glob in two would take -a first
+        put(&two, "-a", "s1");
+        let second = put(&two, "-w", "s1");
+        assert_eq!(
+            find(&roots, "", "s1", "/w", None).as_deref(),
+            Some(second.as_path()),
+            "the slug in two"
+        );
+        let first = put(&one, "-w", "s1");
+        assert_eq!(
+            find(&roots, "", "s1", "/w", None).as_deref(),
+            Some(first.as_path()),
+            "one's slug first"
+        );
+        let glob = put(&two, "-a", "s5");
+        let real = |p: Option<PathBuf>| p.map(|p| std::fs::canonicalize(p).unwrap());
+        assert_eq!(real(find(&roots, "", "s5", "/w", None)), Some(glob), "the glob in two");
+        let out = t.0.join("out.jsonl").display().to_string();
+        assert_eq!(find(&roots, &out, "s9", "/w", None), None, "under neither");
     }
 
     /// #500: the board's memory of the glob: a found file is kept until it is gone,
@@ -828,21 +876,26 @@ mod tests {
     #[test]
     fn the_glob_keeps_a_find_until_it_is_gone_and_a_miss_for_its_ttl() {
         let (root, _t) = tree();
+        let roots = [root.clone()];
         let t0 = std::time::Instant::now();
         let at = |s: u64| Some(t0 + std::time::Duration::from_secs(s));
         let real = |p: Option<PathBuf>| p.map(|p| std::fs::canonicalize(p).unwrap());
         let a = put(&root, "-a", "s2");
-        assert_eq!(real(find(&root, "", "s2", "/x", at(0))), Some(a.clone()));
+        assert_eq!(real(find(&roots, "", "s2", "/x", at(0))), Some(a.clone()));
         std::fs::remove_file(&a).unwrap();
         let b = put(&root, "-b", "s2");
-        assert_eq!(real(find(&root, "", "s2", "/x", at(0))), Some(b), "a gone find is looked for again");
-        assert_eq!(find(&root, "", "s3", "/x", at(0)), None);
+        assert_eq!(
+            real(find(&roots, "", "s2", "/x", at(0))),
+            Some(b),
+            "a gone find is looked for again"
+        );
+        assert_eq!(find(&roots, "", "s3", "/x", at(0)), None);
         put(&root, "-a", "s3");
-        assert_eq!(find(&root, "", "s3", "/x", at(9)), None, "the miss is kept inside its ttl");
-        assert!(find(&root, "", "s3", "/x", at(10)).is_some(), "and looked for again after it");
-        assert_eq!(find(&root, "", "s4", "/x", None), None);
+        assert_eq!(find(&roots, "", "s3", "/x", at(9)), None, "the miss is kept inside its ttl");
+        assert!(find(&roots, "", "s3", "/x", at(10)).is_some(), "and looked for again after it");
+        assert_eq!(find(&roots, "", "s4", "/x", None), None);
         put(&root, "-a", "s4");
-        assert!(find(&root, "", "s4", "/x", None).is_some(), "an uncached look keeps no miss");
+        assert!(find(&roots, "", "s4", "/x", None).is_some(), "an uncached look keeps no miss");
     }
 
     /// #519 review: the memory is bounded: past GLOBBED_MAX sessions, misses past
@@ -850,11 +903,12 @@ mod tests {
     #[test]
     fn the_glob_memory_drops_stale_misses_past_its_bound() {
         let (root, _t) = tree();
+        let roots = [root.clone()];
         let t0 = std::time::Instant::now();
         put(&root, "-k", "keep");
-        assert!(find(&root, "", "keep", "/x", Some(t0)).is_some());
-        (0..GLOBBED_MAX).for_each(|i| assert!(find(&root, "", &format!("m{i}"), "/x", Some(t0)).is_none()));
-        assert!(find(&root, "", "last", "/x", Some(t0 + GLOB_MISS_TTL)).is_none());
+        assert!(find(&roots, "", "keep", "/x", Some(t0)).is_some());
+        (0..GLOBBED_MAX).for_each(|i| assert!(find(&roots, "", &format!("m{i}"), "/x", Some(t0)).is_none()));
+        assert!(find(&roots, "", "last", "/x", Some(t0 + GLOB_MISS_TTL)).is_none());
         let (n, keep) = GLOBBED.with(|c| (c.borrow().len(), c.borrow().contains_key("keep")));
         assert_eq!((n, keep), (2, true), "the stale misses went, the live find and the new miss stayed");
     }

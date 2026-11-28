@@ -64,7 +64,8 @@ impl Rig {
             &format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  list-panes) cat {d}/rows ;;\n\
-                 show-option) printf '|claude|codex|aider|cursor|opencode|gemini|crush|' ;;\n\
+                 show-option) case \"$*\" in *@cockpit_accounts*) cat {d}/accounts ;; \
+                 *) printf '|claude|codex|aider|cursor|opencode|gemini|crush|' ;; esac ;;\n\
                  capture-pane) [ -f {d}/cap ] || exit 1; cat {d}/cap ;;\n\
                  esac\n"
             ),
@@ -130,11 +131,25 @@ impl Rig {
     }
 
     fn transcript_in(&self, slug: &str, sess: &str, body: &str) -> PathBuf {
-        let dir = self.dir.join(format!(".claude/projects/{slug}"));
+        self.transcript_under(".claude", slug, sess, body)
+    }
+
+    /// `$HOME/<cfg>/projects/<slug>/<sess>.jsonl`: a transcript of the account whose dir is `cfg`.
+    fn transcript_under(&self, cfg: &str, slug: &str, sess: &str, body: &str) -> PathBuf {
+        let dir = self.dir.join(format!("{cfg}/projects/{slug}"));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("{sess}.jsonl"));
         std::fs::write(&p, body).unwrap();
         p
+    }
+
+    /// #1601: `@cockpit_accounts`, as the fake's show-option prints it, and the dirs the
+    /// tests list made under the rig's HOME.
+    fn accounts(&self, list: &str) {
+        for d in [".claude", ".claude-2", ".claude-9"] {
+            std::fs::create_dir_all(self.dir.join(d)).unwrap();
+        }
+        std::fs::write(self.dir.join("accounts"), list).unwrap();
     }
 
     fn capture(&self, body: &str) {
@@ -2390,21 +2405,30 @@ fn card_foot(tag: &str, body: &str) -> String {
 }
 
 /// [`card_foot`] on a board `w` columns wide, the pane's `@panestate_rl` (FIELDS' field 21,
-/// #1600) `rl` when it is not empty.
+/// #1600) `rl`.
 fn card_foot_at(tag: &str, body: &str, rl: &str, w: u16) -> String {
-    use cockpit_tui::board::{self, View};
-    use cockpit_tui::theme::Theme;
     let r = Rig::new(tag);
     r.transcript("s1", body);
-    let base = hooked("%1", "done", "s1");
-    let row = if rl.is_empty() {
-        base
-    } else {
-        let mut f: Vec<&str> = base.split('\u{1f}').collect();
-        f.resize(21, "");
-        f.push(rl);
-        f.join("\u{1f}")
-    };
+    foot_of(&r, set_fields(&hooked("%1", "done", "s1"), &[(21, rl)]), w)
+}
+
+/// `row` with its fields `at` set, padded with empty ones up to the highest (#1600, #1601).
+fn set_fields(row: &str, at: &[(usize, &str)]) -> String {
+    let mut f: Vec<&str> = row.split('\u{1f}').collect();
+    for &(i, v) in at {
+        if f.len() <= i {
+            f.resize(i + 1, "");
+        }
+        f[i] = v;
+    }
+    f.join("\u{1f}")
+}
+
+/// The tile of `%1`, the rig's one row `row`, read through the fetch and drawn alone on a
+/// board `w` columns wide: its bottom border row.
+fn foot_of(r: &Rig, row: String, w: u16) -> String {
+    use cockpit_tui::board::{self, View};
+    use cockpit_tui::theme::Theme;
     r.rows(&[row]);
     let ps = list_panes().unwrap();
     let one = [get(&ps, "%1").clone()];
@@ -2631,6 +2655,142 @@ fn every_window_shut_shows_nothing_of_the_allowance() {
         foot.contains(" opus · 84k ") && !foot.contains('%') && !foot.contains("ago"),
         "{foot}"
     );
+}
+
+// ------------------------------------------------ the account a pane runs under (#1601)
+//
+// The board reads @cockpit_accounts once per thread, as it reads @cockpit_agents_glob, so each
+// test here holds one rig: a second rig in the same test would see the first one's list.
+
+/// The card of a pane whose transcript gives `opus · 84k`, with `@cockpit_accounts` `list` and
+/// its FIELDS `at` set, `$HOME` in a value being the rig's: its bottom border row.
+fn acct_foot(tag: &str, list: &str, at: &[(usize, &str)]) -> String {
+    let r = Rig::new(tag);
+    r.accounts(list);
+    r.transcript("s1", &opus_84k());
+    let home = r.dir.display().to_string();
+    let at: Vec<(usize, String)> = at.iter().map(|(i, v)| (*i, v.replace("$HOME", &home))).collect();
+    let at: Vec<(usize, &str)> = at.iter().map(|(i, v)| (*i, v.as_str())).collect();
+    foot_of(&r, set_fields(&hooked("%1", "done", "s1"), &at), 60)
+}
+
+/// No account name on a card: the model and the context come first.
+fn unnamed(foot: &str) -> bool {
+    foot.contains(" opus · 84k ") && !foot.contains(" · opus")
+}
+
+/// #1601: the card names the account whose dir the pane's hooks recorded, `@cockpit_cfg`
+/// (FIELDS' field 22), before the model and the context.
+#[test]
+fn the_tile_names_the_account_its_hooks_saw() {
+    let foot = acct_foot("acct2", "p1=~/.claude p2=~/.claude-2", &[(22, "$HOME/.claude-2")]);
+    assert!(foot.contains(" p2 · opus · 84k "), "{foot}");
+}
+
+/// #1601: a pane whose hooks recorded no dir runs on Claude Code's default, `~/.claude`.
+#[test]
+fn a_pane_with_no_recorded_dir_is_named_the_default_account() {
+    let foot = acct_foot("acct1", "p1=~/.claude p2=~/.claude-2", &[]);
+    assert!(foot.contains(" p1 · opus · 84k "), "{foot}");
+}
+
+/// #1601: no name for a dir no account has.
+#[test]
+fn a_pane_on_an_unlisted_dir_is_named_nothing() {
+    let foot = acct_foot("acctnone", "p1=~/.claude p2=~/.claude-2", &[(22, "$HOME/.claude-9")]);
+    assert!(unnamed(&foot), "{foot}");
+}
+
+/// #1601: the account goes before the allowance, which goes before the model and the context.
+#[test]
+fn the_account_goes_before_the_allowance_on_the_card() {
+    let rl = rl(30, Some((42, R5)), Some((18, 3 * DAY + 2 * HOUR)));
+    let foot = acct_foot("acctrl", "p1=~/.claude p2=~/.claude-2", &[(21, &rl), (22, "$HOME/.claude-2")]);
+    assert!(foot.contains(" p2 · 5h 58% 2h10m · 7d 82% 3d · opus · 84k "), "{foot}");
+}
+
+/// #1601: a pane the hooks marked is named nothing either while no account is listed.
+#[test]
+fn a_marked_pane_is_named_nothing_with_the_option_unset() {
+    let foot = acct_foot("acctmarkunset", "", &[(23, "1")]);
+    assert!(unnamed(&foot), "{foot}");
+}
+
+/// #1601: no name with the option unset.
+#[test]
+fn no_account_is_named_with_the_option_unset() {
+    let foot = acct_foot("acctunset", "", &[]);
+    assert!(unnamed(&foot), "{foot}");
+}
+
+/// #1601: a pane the hooks never marked, an agent by its command alone, has no record of its
+/// dir: no name, not the default account's.
+#[test]
+fn a_pane_the_hooks_never_marked_is_named_nothing() {
+    let r = Rig::new("acctnohook");
+    r.accounts("p1=~/.claude p2=~/.claude-2");
+    r.transcript("s1", &opus_84k());
+    let foot = foot_of(&r, row("%1", "claude", "-", "s1", "100"), 60);
+    assert!(unnamed(&foot), "{foot}");
+}
+
+/// #1601: a list refused whole for one bad entry names no account, and says why in the
+/// board's log.
+#[test]
+fn a_refused_account_list_names_nothing_and_is_logged() {
+    let r = Rig::new("acctlog");
+    let log = r.dir.join("tui.log");
+    let _env = Env::set(fake::Held::Lent(r.held()), &[("COCKPIT_LOG", log.display().to_string())]);
+    r.accounts("p1=~/.claude p2");
+    r.transcript("s1", &opus_84k());
+    let foot = foot_of(&r, hooked("%1", "done", "s1"), 60);
+    let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(unnamed(&foot), "{foot}");
+    assert!(said.contains(" @cockpit_accounts refused: \"p2\" is not name=dir\n"), "{said:?}");
+}
+
+/// #1601: a pane whose hooks ran under Claude Code's env scrub saw no dir, and they marked it
+/// (`@cockpit_cfg_unseen`, field 23): its card says `?`, never the default account's name.
+#[test]
+fn a_pane_whose_hooks_ran_under_the_env_scrub_is_not_named_the_default_account() {
+    let foot = acct_foot("acctscrub", "p1=~/.claude p2=~/.claude-2", &[(23, "1")]);
+    assert!(foot.contains(" ? · opus · 84k ") && !foot.contains("p1"), "{foot}");
+}
+
+/// #1601: the doing line of a pane whose transcript sits under `~/.claude-2`, with `@cockpit_accounts`
+/// `list` and the board's own dir `~/.claude`. `with_path`: the hook passed its path (field 15); else it
+/// refused it, as under the env scrub, and only the session id is there.
+fn second_account_doing(tag: &str, list: &str, with_path: bool) -> String {
+    let r = Rig::new(tag);
+    r.accounts(list);
+    let t = r.transcript_under(".claude-2", "-w", "s1", BASH_ROW).display().to_string();
+    let cfg = r.dir.join(".claude-2").display().to_string();
+    let at = [(15, if with_path { t.as_str() } else { "" }), (22, cfg.as_str())];
+    r.rows(&[set_fields(&hooked("%1", "running", "s1"), &at)]);
+    get(&list_panes().unwrap(), "%1").doing.clone()
+}
+
+#[test]
+fn a_transcript_under_a_second_listed_account_gives_the_doing_line() {
+    assert_eq!(
+        second_account_doing("acctpath", "p1=~/.claude p2=~/.claude-2", true),
+        "Bash: echo one"
+    );
+}
+
+/// #1601: under the env scrub the hook refused the path, and the session id finds the file.
+#[test]
+fn a_session_under_a_second_listed_account_is_found_by_its_id() {
+    assert_eq!(
+        second_account_doing("acctsid", "p1=~/.claude p2=~/.claude-2", false),
+        "Bash: echo one"
+    );
+}
+
+/// #1601: a dir no account lists is still not read.
+#[test]
+fn a_transcript_under_an_unlisted_dir_is_still_refused() {
+    assert_eq!(second_account_doing("acctoff", "p1=~/.claude", true), "");
 }
 
 /// #1374: tmux prints every field of the format the board passes, so a row one short of

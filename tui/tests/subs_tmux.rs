@@ -1,7 +1,8 @@
 //! FIELDS against a real tmux server on a private socket (#313): the options the hooks write
-//! come back as `Pane.subs_n` and `Pane.subs`, and the one the status line shim writes as
-//! `Pane.allow` (#1600). `subs_fields.rs` and the card tests in `data.rs` pin the parsers on
-//! canned rows; this pins the format string. Its own binary: `list_panes` reads the env.
+//! come back as `Pane.subs_n` and `Pane.subs`, the one the status line shim writes as
+//! `Pane.allow` (#1600), and the hooks' config dir and scrub mark as `Pane.account`
+//! (#1601). `subs_fields.rs` and the card tests in `data.rs` pin the parsers on canned rows;
+//! this pins the format string. Its own binary: `list_panes` reads the env.
 mod fake;
 use cockpit_tui::data::list_panes;
 use std::path::PathBuf;
@@ -64,14 +65,25 @@ fn the_hook_options_reach_the_pane_through_the_format() {
         .unwrap()
         .as_secs();
     let rl = format!("{now}_42_{}_-_-", now + 7830);
+    // #1601: the pane's claude on the second account, as its hooks recorded it
+    std::fs::create_dir_all(dir.join(".claude-2")).unwrap();
+    let two = format!("{d}/.claude-2");
     for (k, v) in [
         ("@panestate", "running"),
         ("@cockpit_subs", "3"),
         ("@cockpit_transcript", &t),
         ("@panestate_rl", &rl),
+        ("@cockpit_cfg", &two),
     ] {
         s.tmux(&["set-option", "-p", "-t", &p, k, v]);
     }
+    // #1601: a second agent pane whose hooks ran under the env scrub, with a session of its own
+    // so the fetch looks none up for it
+    let q = s.tmux(&["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", &p, "-c", &d, "exec sleep 60"]);
+    for (k, v) in [("@panestate", "running"), ("@cockpit_session", "s2"), ("@cockpit_cfg_unseen", "1")] {
+        s.tmux(&["set-option", "-p", "-t", &q, k, v]);
+    }
+    s.tmux(&["set-option", "-g", "@cockpit_accounts", "p1=~/.claude p2=~/.claude-2"]);
     // The pane has no session, so `list_panes` looks one up: `claude agents --json`,
     // found by PATH. The rig's own answers it, the one `rig_path` writes, which counts
     // its starts beside itself. `tmux` still comes from the rest of PATH (#972).
@@ -91,13 +103,14 @@ fn the_hook_options_reach_the_pane_through_the_format() {
     let ps = list_panes().unwrap();
     let started = std::fs::read_to_string(dir.join("bin/claude.started")).unwrap_or_default();
     assert_eq!(started, "x\n", "the lookup did not start the rig's claude once");
-    let got: Vec<(u32, Vec<String>)> = ps
-        .iter()
-        .map(|p| (p.subs_n, p.subs.iter().map(|s| s.desc.clone()).collect()))
-        .collect();
-    assert_eq!(got, [(3, vec!["live".to_string()])]);
+    let one = ps.iter().find(|x| x.id == p).expect("the first pane is listed");
+    let subs: Vec<String> = one.subs.iter().map(|s| s.desc.clone()).collect();
+    assert_eq!((one.subs_n, subs), (3, vec!["live".to_string()]));
+    // #1601: fields 22 and 23 through the same format, and the option the board reads
+    let acct = |id: &str| ps.iter().find(|x| x.id == id).and_then(|x| x.account.clone());
+    assert_eq!((acct(&p), acct(&q)), (Some("p2".to_string()), Some("?".to_string())));
     // #1600: FIELDS' field 21 reaches the pane through the same format
-    let a = ps[0].allow.expect("no allowance came through the format");
+    let a = one.allow.expect("no allowance came through the format");
     let five = a.five.expect("no 5-hour window");
     let seen = (five.used, a.week, a.age < 60, (7800..=7830).contains(&five.left));
     assert_eq!(seen, (42, None, true, true), "{a:?}");
