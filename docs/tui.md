@@ -2705,15 +2705,18 @@ a name, reads each pane's own value with `show-options -p`. `--json` and `--rows
 not carry it.
 
 **`allow` (#1600):** the 5-hour and weekly allowance `scripts/agent-context` read
-from the status line, `@panestate_rl` (FIELDS' field 21, docs/states-and-hooks.md):
-when it was read and, per window, the share used and the reset, in epoch seconds. A
-value not of that shape, or with neither window, is `None`. The tile's bottom border
-draws it before the model and the context, ` 5h 58% 2h10m · 7d 82% 3d · opus · 84k `:
-what is left of each window and the time to its reset. A window whose reset is past,
-or more than 7 days and 1 hour away, is left out. A reading 5 minutes old or more
-adds its age, ` · 12m ago`. The countdown and the age go into the redraw gate as
-printed, so they move on screen while the fleet is quiet. `--json` and `--rows` do
-not carry it.
+from the status line, `@panestate_rl` (FIELDS' field 21, docs/states-and-hooks.md),
+as the fetch saw it: how old the reading is and, per window, the share used and the
+seconds left to its reset. The fetch reads the clock, so the drawing does not. `-_-`
+is the one spelling of a missing window: a value not of the shim's shape, a bad window
+included, is `None`. A window whose reset is past, or more than 7 days and 1 hour away,
+is left out, and a value with no window left is `None`. The tile's bottom border draws
+it before the model and the context, ` 5h 58% 2h10m · 7d 82% 3d · opus · 84k `: what
+is left of each window and the time to its reset. A reading 5 minutes old or more adds
+its age, ` · 12m ago`, counted from the minute the shim stamped, so it can read up to a
+minute high. The rows' hash skips the countdown and the age, and the redraw gate takes
+them as printed, so they move on screen while the fleet is quiet. `--json` and
+`--rows` do not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 

@@ -112,8 +112,8 @@ that stalls is a silent no-op within a bounded read, the same contract
 It also records the 5-hour and weekly allowance from the payload's `rate_limits`
 in `@panestate_rl`, which the board draws on the tile (docs/tui.md, `allow`,
 #1600). The value is `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>`: the
-minute it was read, then each window's used share in whole percent rounded up and
-its `resets_at`, all times in epoch seconds. A window the payload lacks is `-_-`.
+minute it was read, then each window's used share in whole percent rounded up, from
+0 to 100, and its `resets_at`, all times in epoch seconds. A window the payload lacks is `-_-`.
 Claude Code sends `rate_limits` to subscribers only, after the session's first
 answer, and a payload without it unsets the option. The minute is part of the
 value, so figures that stay the same are written once a minute at most.
