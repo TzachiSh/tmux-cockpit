@@ -734,3 +734,43 @@ by the 4 KB cap, or by a writer that died), not absolute, holds a control charac
 backslash, or names no directory. `#` is allowed: a directory may be named `x#y`, and
 `set-option -p` stores `#(...)` as written. tmux reads an argument's trailing `;` as a command
 separator, so a directory ending in `;` is passed as `\;`.
+
+## Messages between sessions
+
+`cockpit-tui msg send` passes a message from one agent session to another, and no shared record
+holds its words (#1575, epic #1573). A session id here is the UUID in `@cockpit_session` with its
+dashes dropped, in lower case: 32 hex digits, as every contract id is written. The command runs in
+a pane of a tmux server: `$TMUX` must be set and `$TMUX_PANE` must be a pane id, `%N`. The read
+side, `cockpit-tui msg read`, comes in the next part of #1575.
+
+`cockpit-tui msg send --session <id> <to> <summary-file> <body-file>` sends from the pane
+`$TMUX_PANE` names, and `<id>` must be the session that pane publishes. `<to>` must be a session
+that a pane of the same server publishes. The summary is one line of UTF-8, a final newline
+allowed, not empty, at most 200 bytes, with no tab, control or bidi character. The summary and the
+body must be regular files. The send prints the new `msg_id` once the message is stored.
+
+Exit 0 is done. A refusal exits 1 with one line on stderr, `cockpit-tui: msg: <reason>`. When
+tmux fails, that line says tmux failed, never that no session is there. A usage error exits 2. A
+send that cannot print its `msg_id` exits 1 too, and its line names the `msg_id` of the message
+it stored.
+
+The store is `tmux-cockpit` in the state folder: `$XDG_STATE_HOME/tmux-cockpit`, else
+`$HOME/.local/state/tmux-cockpit`. As in `store::xdg_dir` (#1508), a relative value is ignored,
+and with neither home an absolute path there is no store.
+
+- `refs/<msg_id>.txt` holds the summary line and `refs/<msg_id>.md` the body: refs, in the folder
+  and the shape `contracts/README.md` names.
+- `msg/<to>/<msg_id>.json` is the envelope, one line with the keys
+  `contracts/agent-message.schema.json` version 2 requires: ids and refs only.
+
+The store's own folders, `refs/`, `msg/` and `msg/<to>/`, are made 0700. One already there must
+be a folder of this user, not a symbolic link, with no group or other bits, or the send refuses
+and names it. The root, `tmux-cockpit`, holds other files of the plugin too and keeps the mode it
+has; a missing one is made 0700, with any missing parent. Each file is created 0600, written
+beside its name as `.<name>.<pid>.new` and linked into place. A link never replaces a name, so a
+send whose `msg_id` is stored already is refused.
+
+The refs are linked before the envelope, so an envelope names only refs in place. A send refused
+before it writes makes no folder. A send refused while it writes takes back the files it linked,
+and only those, and leaves the folders it made. A send killed while it writes, by a signal or a
+crash, can leave refs that no envelope names and a `.<name>.<pid>.new` temp file.

@@ -1692,6 +1692,54 @@ is "a name typed with quotes in it runs nothing and names nothing" "$nm_before|1
 unset -f nm_set nm_role nm_said nm_no nm_menu
 fi
 
+echo "== cockpit-tui msg send between the sessions of a private server (#1575) =="
+# The board binary on a private server, from panes that publish a session as the hooks do. Each run
+# names its pane by TMUX_PANE, as an agent's shell does, and keeps its store in the block's own
+# XDG_STATE_HOME. The unit tests in tui/src/msg.rs hold every rule that needs no tmux; these rows
+# hold the caller check through @cockpit_session and the receiver check over list-panes.
+if need_tmux "cockpit-tui msg"; then :; else
+MS=$(cd "$(mktmpd)" && pwd -P); MSS="cockpit-ms-$$"; SOCKS="$SOCKS $MSS"
+fresh_server -L "$MSS" -f /dev/null -- -d -s t -x 80 -y 24 -c "$MS" 'exec sleep 300'
+ms_pane() {                   # a new window's pane id, in the block's folder
+    "$TMUX_REAL" -L "$MSS" new-window -d -P -F '#{pane_id}' -t t: -c "$MS" 'exec sleep 300'; }
+MSA=$("$TMUX_REAL" -L "$MSS" list-panes -t t -F '#{pane_id}'); MSB=$(ms_pane); MSN=$(ms_pane)
+"$TMUX_REAL" -L "$MSS" set -p -t "$MSA" @cockpit_session 3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5d
+"$TMUX_REAL" -L "$MSS" set -p -t "$MSB" @cockpit_session 7A1B2C3D-4E5F-4061-8273-94A5B6C7D8E9
+MSHA=3f2a9c0d1e4b4a678c9d0e1f2a3b4c5d MSHB=7a1b2c3d4e5f4061827394a5b6c7d8e9
+sock_path "$MSS" MSSOCK
+printf 'hello from A\n' > "$MS/sum"; printf 'line one\n\tline two\n' > "$MS/body"
+ms() {                        # <pane> <args...> -> "<rc>|<stderr>", stdout in $MS/o
+    local e rc
+    e=$(cd "$MS" && env XDG_STATE_HOME="$MS/state" TMUX="$MSSOCK,0,0" TMUX_PANE="$1" \
+        timeout 20 "$COCKPIT_TUI_BIN" msg "${@:2}" </dev/null 2>&1 >"$MS/o"); rc=$?
+    printf '%s|%s' "$rc" "$e"
+}
+ms1=$(ms "$MSA" send --session "$MSHA" "$MSHB" sum body); msid1=$(cat "$MS/o")
+ms2=$(ms "$MSA" send --session "$MSHA" "$MSHB" sum body); msid2=$(cat "$MS/o")
+msnew=$([ "$msid1" != "$msid2" ] && printf '%s' "$msid1$msid2" | grep -cE '^[0-9a-f]{64}$')
+is "msg send from a pane that publishes its session prints a new 32-hex msg_id each time" \
+    "0||0||1" "$ms1|$ms2|$msnew"
+is "msg send refuses a --session that is not its pane's" \
+    "1|cockpit-tui: msg: session $MSHB is not the session of pane $MSA" \
+    "$(ms "$MSA" send --session "$MSHB" "$MSHA" sum body)"
+is "msg send refuses a pane that publishes no session" \
+    "1|cockpit-tui: msg: pane $MSN publishes no session in @cockpit_session" \
+    "$(ms "$MSN" send --session "$MSHA" "$MSHB" sum body)"
+MSZ=00112233445566778899aabbccddeeff
+is "msg send refuses a receiver that no pane of the server publishes" \
+    "1|cockpit-tui: msg: no pane of this tmux server publishes session $MSZ" \
+    "$(ms "$MSA" send --session "$MSHA" "$MSZ" sum body)"
+# tmux either fails on a pane it does not hold or answers with no pane id: a refusal both ways
+msr=$(ms %999 send --session "$MSHA" "$MSHB" sum body)
+case $msr in
+    "1|cockpit-tui: msg: cannot read pane %999: tmux failed" | \
+        "1|cockpit-tui: msg: pane %999 is not a pane of this tmux server") msr=refused ;;
+esac
+is "msg send from a pane id the server does not hold is refused" refused "$msr"
+"$TMUX_REAL" -L "$MSS" kill-server >/dev/null 2>&1
+unset -f ms ms_pane
+fi
+
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then

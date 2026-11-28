@@ -29,3 +29,5 @@ pub mod files;
 pub mod store;
 // the open AskUserQuestion read whole (#1504), epic #1500
 pub mod ask;
+// one agent session's message to another (#1575), epic #1573
+pub mod msg;
