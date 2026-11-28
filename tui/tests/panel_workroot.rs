@@ -136,7 +136,7 @@ fn looks(d: &Path) -> Looks {
         path: None,
         budget: Duration::from_secs(20),
     };
-    Looks::new(Collector::new(gh, d.join("store"), Box::new(|| 1_000_000)))
+    Looks::new(Collector::new(gh, Some(d.join("store")), Box::new(|| 1_000_000)))
 }
 
 fn press(a: &mut App, c: char) {

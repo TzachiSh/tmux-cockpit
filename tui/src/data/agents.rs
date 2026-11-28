@@ -172,8 +172,12 @@ pub fn proc_root() -> PathBuf {
     std::env::var_os("COCKPIT_PROC_DIR").map_or_else(|| "/proc".into(), PathBuf::from)
 }
 
-pub fn cache_path() -> PathBuf {
-    crate::panel::xdg("XDG_CACHE_HOME", ".cache").join("tmux-cockpit/agents.json")
+/// `agents.json` in the cache folder of [`crate::store::xdg_dir`]; `None` with no cache
+/// folder, where the lookup is kept in memory alone (#1597).
+pub fn cache_path() -> Option<PathBuf> {
+    let var = |k| std::env::var(k).ok();
+    let cache = crate::store::xdg_dir(var("XDG_CACHE_HOME").as_deref(), var("HOME").as_deref(), ".cache")?;
+    Some(cache.join("tmux-cockpit/agents.json"))
 }
 
 fn epoch() -> u64 {
@@ -266,7 +270,7 @@ pub fn read_file(path: &Path, root: &Path, now: u64) -> Option<Snapshot> {
 /// The cache entry for `pid`, for a reader that wants the session without
 /// asking `claude` (#504). Read only; `None` is "not known", not "no session".
 pub fn cached(pid: &str) -> Option<Entry> {
-    read_file(&cache_path(), &proc_root(), epoch())?.by_pid.remove(pid)
+    read_file(&cache_path()?, &proc_root(), epoch())?.by_pid.remove(pid)
 }
 
 /// Temp file in the same directory, mode 600, then a rename over `path`.
@@ -297,7 +301,8 @@ struct Pos {
 }
 
 struct State {
-    path: PathBuf,
+    /// `None` with no cache folder: nothing read, nothing written.
+    path: Option<PathBuf>,
     /// which state a thread belongs to; a thread of an older one drops its answer
     gen_id: u64,
     running: bool,
@@ -323,7 +328,7 @@ fn same_proc(stored: &Option<String>, seen: Instant, root: &Path, pid: &str) -> 
 }
 
 impl State {
-    fn new(path: PathBuf, root: &Path) -> State {
+    fn new(path: Option<PathBuf>, root: &Path) -> State {
         let mut s = State {
             gen_id: GEN.fetch_add(1, Ordering::Relaxed),
             path,
@@ -334,7 +339,7 @@ impl State {
             last_ask: None,
         };
         // another board's answer is as good as ours
-        if let Some(snap) = read_file(&s.path, root, epoch()) {
+        if let Some(snap) = s.path.as_deref().and_then(|p| read_file(p, root, epoch())) {
             let now = Instant::now();
             let seen = now.checked_sub(Duration::from_secs(epoch().saturating_sub(snap.at))).unwrap_or(now);
             // a one-shot asks for a pid the file lacks, whatever the file's age
@@ -450,7 +455,7 @@ pub fn resolve(lineage: &[(String, String)]) -> String {
     match ask_now {
         Err(sess) => sess,
         Ok((gen_id, path, asked)) => {
-            ask(gen_id, &path, asked);
+            ask(gen_id, path.as_deref(), asked);
             with_state(&root, |s| match s.look(&root, lineage) {
                 Look::Found(sess) => sess,
                 Look::Unknown(_) => String::new(),
@@ -478,7 +483,7 @@ pub fn flush() {
         let running = Running::start();
         std::thread::spawn(move || {
             let _running = running;
-            ask(gen_id, &path, asked)
+            ask(gen_id, path.as_deref(), asked)
         });
     }
 }
@@ -501,7 +506,7 @@ fn parse(out: &[u8]) -> Option<Vec<(String, Entry)>> {
     })
 }
 
-fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
+fn ask(gen_id: u64, path: Option<&Path>, asked: HashSet<String>) {
     let t0 = Instant::now();
     let out = claude_agents_json(AGENTS_DEADLINE);
     let root = proc_root();
@@ -547,7 +552,7 @@ fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
         s.doc(&root)
     };
     // `at` is the time of an answer: a failed call writes nothing
-    if answered {
+    if answered && let Some(path) = path {
         let _ = write_file(path, &doc);
     }
 }

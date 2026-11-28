@@ -227,9 +227,12 @@ pub fn repo_key(top: &str) -> String {
     format!("{h:016x}")
 }
 
-/// `$XDG_CACHE_HOME/tmux-cockpit/panel/seen`, or `~/.cache/...` without it.
-pub fn seen_dir() -> PathBuf {
-    super::xdg("XDG_CACHE_HOME", ".cache").join("tmux-cockpit/panel/seen")
+/// `tmux-cockpit/panel/seen` in the cache folder of [`crate::store::xdg_dir`]; `None` with
+/// no cache folder, where nothing is seen and no mark is kept (#1597).
+pub fn seen_dir() -> Option<PathBuf> {
+    let var = |k| std::env::var(k).ok();
+    let cache = crate::store::xdg_dir(var("XDG_CACHE_HOME").as_deref(), var("HOME").as_deref(), ".cache")?;
+    Some(cache.join("tmux-cockpit/panel/seen"))
 }
 
 fn is_key(key: &str) -> bool {
@@ -366,8 +369,8 @@ struct Fetched {
 pub struct Collector {
     pub gh: Gh,
     pub git_budget: Duration,
-    /// Where the last-seen files are: [`seen_dir`] in the panel.
-    pub store: PathBuf,
+    /// Where the last-seen files are: [`seen_dir`] in the panel, none without it.
+    pub store: Option<PathBuf>,
     /// Seconds since the epoch; a test's own clock.
     clock: Box<dyn Fn() -> u64 + Send>,
     fetched: HashMap<String, Fetched>,
@@ -375,7 +378,7 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(gh: Gh, store: PathBuf, clock: Box<dyn Fn() -> u64 + Send>) -> Collector {
+    pub fn new(gh: Gh, store: Option<PathBuf>, clock: Box<dyn Fn() -> u64 + Send>) -> Collector {
         Collector {
             gh,
             git_budget: GIT_BUDGET,
@@ -414,7 +417,7 @@ impl Collector {
             return c;
         };
         let key = repo_key(&top);
-        c.seen = read_seen(&self.store, &key);
+        c.seen = self.store.as_deref().and_then(|s| read_seen(s, &key));
         let head = capture::spawn_git(&top, &[], &["rev-parse", "--verify", "-q", "HEAD"]);
         let branch = capture::spawn_git(&top, &[], &["symbolic-ref", "-q", "--short", "HEAD"]);
         let url = capture::spawn_git(&top, &[], &["config", "--get", "remote.origin.url"]);

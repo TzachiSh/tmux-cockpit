@@ -94,7 +94,7 @@ fn call(d: &Path) -> Call {
     Call {
         claude: bin.display().to_string(),
         timeout: Duration::from_secs(60),
-        dir: d.join("cache"),
+        dir: Some(d.join("cache")),
         effort: Effort::Medium,
     }
 }

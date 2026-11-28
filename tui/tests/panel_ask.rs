@@ -395,7 +395,7 @@ fn launch_sends_the_read_only_call() {
     let call = Call {
         claude: bin.display().to_string(),
         timeout: std::time::Duration::from_secs(30),
-        dir: d.0.join("cache"),
+        dir: Some(d.0.join("cache")),
         effort: Effort::Medium,
     };
     a.launch(&call);
@@ -617,7 +617,7 @@ fn an_answer_notes_the_files_read_from_the_repo() {
     a.launch(&Call {
         claude: bin.display().to_string(),
         timeout: std::time::Duration::from_secs(30),
-        dir,
+        dir: Some(dir),
         effort: Effort::Medium,
     });
     for _ in 0..1000 {

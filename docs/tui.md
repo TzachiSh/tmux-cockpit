@@ -300,9 +300,10 @@ benchmarks.
 `<name>` one of `write`, `write.examples`, `explain`, `fix` or `ask-code` (#365), replaces the
 shipped prompt of that name; the `{{platform}}`, `{{home}}`, `{{about_user}}`
 and `{{examples}}` placeholders are filled in it the same way. A missing file
-means the shipped prompt. A file that exists but cannot be read (permissions,
-invalid UTF-8) also falls back to the shipped prompt, and the reason goes to
-`tui.log`.
+means the shipped prompt, and so does no config folder: `HOME` and
+`XDG_CONFIG_HOME` both unset or relative (#1597). A file that exists but cannot
+be read (permissions, invalid UTF-8) also falls back to the shipped prompt, and
+the reason goes to `tui.log`.
 
 **The write prompt's evaluation.** `cargo run --example panel_eval` (in `tui/`)
 runs the labelled cases in `tui/evals/panel/cases.txt` through the panel's own
@@ -532,8 +533,10 @@ text too and whose summary names that file; `--compare` refuses a case
 whose rows on one side carry two hashes, naming its file and the hashes, unless
 given `--allow-mixed`. Each run
 appends its cost to `--ledger <file>`, else to `cost.tsv` next to `--out`, else to
-`$XDG_STATE_HOME/tmux-cockpit/panel-eval-cost.tsv` (`~/.local/state` if not absolute); a
-`--judge` run adds a second row for the judge's spend. The ledger's `prompt`
+`$XDG_STATE_HOME/tmux-cockpit/panel-eval-cost.tsv` (`~/.local/state` if not absolute).
+With none of the three (`HOME` unset or relative too), the run is refused before
+its first call (#1597). A `--judge` run adds a second row for the judge's
+spend. The ledger's `prompt`
 column lists every prompt hash the run saw, so a run mixing plain and exploring
 writes shows two with no file edited.
 
@@ -734,7 +737,9 @@ distinct prompt is written once to
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-cockpit/panel/prompts/<hash>.txt`, mode
 0600 in a 0700 directory. `tmux-cockpit/panel` is also the call's working
 directory. Nothing prunes it; a new file appears only when a prompt's text
-changes.
+changes. With no cache folder (`HOME` and `XDG_CACHE_HOME` both unset or
+relative) the panel still opens, and each call is refused with that reason and
+writes nothing (#1597).
 
 **The panel call's environment** (#853). Each `claude -p` call the panel
 starts gets three variables. In the words of
@@ -1698,8 +1703,10 @@ Explain draws it (#935, "Explain shows it" below).
 
 - **Last seen.** Per repo, the HEAD sha and a time in seconds, one line
   `<sha> <secs>` in `$XDG_CACHE_HOME/tmux-cockpit/panel/seen/<key>`
-  (`~/.cache/...` when XDG_CACHE_HOME is unset or relative). The file is mode
-  600. `mark_seen` makes the folder mode 700, or sets 700 on one it finds.
+  (`~/.cache/...` when XDG_CACHE_HOME is unset or relative). With `HOME` unset
+  or relative too there is no folder: nothing is seen and no mark is written
+  (#1597). The file is mode 600. `mark_seen` makes the folder mode 700, or sets
+  700 on one it finds.
   `<key>` is 16 hex digits, FNV-1a 64 of the repo's canonical top-level path,
   so the file name and its body hold no path, no subject and no title. A
   missing, unreadable or malformed file is "nothing seen", and so is anything
@@ -2081,7 +2088,8 @@ panel with the reason in a warn note.
 - The board opens on D5's choice: `--select`, else `board.state`, else the
   first `▲`, else the client's pane, else the first tile (it was always the
   first tile).
-- `board::run` takes `&Opts`; `panel::xdg` is `pub(crate)`.
+- `board::run` takes `&Opts`; `panel::xdg` is `pub(crate)` (gone since #1597, for
+  `store::xdg_dir`).
 
 ### Contract changes for the list (for #61)
 
@@ -3556,7 +3564,9 @@ negative.
 
 The answer is kept in memory and in
 `${XDG_CACHE_HOME:-~/.cache}/tmux-cockpit/agents.json`, mode 600 in a mode 700
-directory, written to a temp file in that directory and renamed over:
+directory, written to a temp file in that directory and renamed over. With no
+cache folder (`HOME` and `XDG_CACHE_HOME` both unset or relative) it is kept in
+memory only (#1597). The file:
 
 ```json
 {"v":1,"at":1790000000,

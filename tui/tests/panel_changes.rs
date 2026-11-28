@@ -98,7 +98,7 @@ impl Rig {
 
     fn collector(&self) -> Collector {
         let clock = self.clock.clone();
-        Collector::new(self.gh(), self.store(), Box::new(move || clock.load(Ordering::SeqCst)))
+        Collector::new(self.gh(), Some(self.store()), Box::new(move || clock.load(Ordering::SeqCst)))
     }
 
     fn at(&self, t: u64) {
@@ -365,7 +365,7 @@ fn seen_dir_child() {
     if std::env::var_os("CHANGES_SEEN_DIR_CHILD").is_none() {
         return;
     }
-    assert_eq!(seen_dir(), PathBuf::from("/sys/absent-1000/cache/tmux-cockpit/panel/seen"));
+    assert_eq!(seen_dir(), Some(PathBuf::from("/sys/absent-1000/cache/tmux-cockpit/panel/seen")));
     eprintln!("the-seen-dir-followed-xdg");
 }
 
@@ -675,7 +675,7 @@ fn failed_with(tag: &str, body: Option<&str>) -> Changes {
             ..gh
         };
     }
-    let mut c = Collector::new(gh, r.store(), Box::new(|| T0));
+    let mut c = Collector::new(gh, Some(r.store()), Box::new(|| T0));
     collect(&mut c, &d)
 }
 
@@ -715,7 +715,7 @@ fn a_gh_past_its_budget_is_killed_with_its_group() {
         budget: Duration::from_millis(300),
         ..r.gh()
     };
-    let got = collect(&mut Collector::new(gh, r.store(), Box::new(|| T0)), &d);
+    let got = collect(&mut Collector::new(gh, Some(r.store()), Box::new(|| T0)), &d);
     assert_eq!((github(&got), got.notes.clone()), (vec![], vec![Note::GhTimedOut]));
     let kids = std::fs::read_to_string(r.bin.join("gh.kids")).unwrap();
     let alive: Vec<&str> = kids.lines().filter(|p| !dies(p)).collect();
@@ -744,7 +744,7 @@ fn quiet_child() {
         budget: Duration::from_millis(300),
         ..r.gh()
     };
-    Collector::new(gh, r.store(), Box::new(|| T0)).collect(d.to_str().unwrap());
+    Collector::new(gh, Some(r.store()), Box::new(|| T0)).collect(d.to_str().unwrap());
     eprintln!("the-failures-were-quiet");
 }
 

@@ -76,7 +76,7 @@ impl Rig {
         Call {
             claude: self.d.join("claude-stub").display().to_string(),
             timeout: Duration::from_secs(60),
-            dir: self.d.join("cache"),
+            dir: Some(self.d.join("cache")),
             effort: Effort::Medium,
         }
     }

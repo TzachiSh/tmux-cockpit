@@ -626,7 +626,7 @@ fn esc_cancels_a_busy_request_and_kills_it() {
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
-        dir: dir.join("cache"),
+        dir: Some(dir.join("cache")),
         effort: Effort::Medium,
     };
 

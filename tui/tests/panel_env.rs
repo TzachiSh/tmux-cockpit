@@ -111,7 +111,7 @@ fn the_call_is_no_panes_agent_and_marks_itself() {
     let call = Call::from_env();
     assert_eq!(call.claude, format!("{}/claude", e.dir.display()));
     assert_eq!(call.timeout, Duration::from_secs(7));
-    assert_eq!(call.dir, e.dir.join("cache/tmux-cockpit/panel"));
+    assert_eq!(call.dir, Some(e.dir.join("cache/tmux-cockpit/panel")));
 
     let mut req = Request::spawn(&call, "S", "p", "haiku");
     let mut got = None;
@@ -144,7 +144,7 @@ fn the_call_defaults_without_its_variables() {
     assert_eq!(call.timeout, Duration::from_secs(120), "an unparsable timeout is the default");
     assert_eq!(
         call.dir,
-        e.dir.join(".cache/tmux-cockpit/panel"),
+        Some(e.dir.join(".cache/tmux-cockpit/panel")),
         "a relative XDG_CACHE_HOME is ignored"
     );
 }
@@ -441,7 +441,7 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     let call = Call {
         claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
         timeout: Duration::from_secs(77),
-        dir: e.dir.join("cache"),
+        dir: Some(e.dir.join("cache")),
         effort: Effort::Medium,
     };
     let mut a = App::new("%3", Capture::default());
@@ -1088,7 +1088,7 @@ fn config_dir_refusal(tag: &str, dir: &[u8]) -> String {
     let call = Call {
         claude: e.dir.join("no-claude").display().to_string(),
         timeout: Duration::from_secs(30),
-        dir: e.dir.join("cache"),
+        dir: Some(e.dir.join("cache")),
         effort: Effort::Medium,
     };
     let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, Duration::from_secs(300));

@@ -2439,7 +2439,7 @@ mod tests {
         let call = Call {
             claude: "/nonexistent/claude-stub".into(),
             timeout: Duration::from_secs(1),
-            dir: PathBuf::from("/nonexistent"),
+            dir: Some(PathBuf::from("/nonexistent")),
             effort: super::super::request::Effort::Medium,
         };
         a.launch(&call);
