@@ -3050,8 +3050,7 @@ bit on a channel nobody waits on. The next board's start drops every entry
 whose pid is not a running cockpit-tui (read from `/proc/<pid>/comm`, or
 `ps -o comm=`), and sends that channel one last `-S`, which releases a waiter
 left where there is no PDEATHSIG. Only entries of the exact form
-`cockpit-board-<digits>` are read. The start also unsets `@cockpit_tui_pid`,
-which a board from before #224 may have left.
+`cockpit-board-<digits>` are read.
 
 ### The VS16 backend shim
 

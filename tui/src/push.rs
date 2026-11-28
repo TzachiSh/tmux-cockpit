@@ -108,8 +108,6 @@ fn is_board(pid: u32) -> bool {
 /// The tmux argv that lists `chan`, after dropping the entries in `listed` of
 /// boards that are gone. Each dropped channel gets one `-S`, which releases a
 /// waiter that a SIGKILLed board left behind where no PDEATHSIG took it along.
-/// It also unsets `@cockpit_tui_pid`, the wakeup before #224, so a pid an older
-/// board left standing does not stay for an older agent-state to signal.
 pub fn register_args(listed: &str, chan: &str) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     for e in listed.split(" ; ") {
@@ -125,7 +123,6 @@ pub fn register_args(listed: &str, chan: &str) -> Vec<String> {
         a.extend(["set-option".into(), "-gF".into(), OPTION.into(), unlist(old), ";".into()]);
         a.extend(["wait-for".into(), "-S".into(), old.into(), ";".into()]);
     }
-    a.extend(["set-option".into(), "-gu".into(), "@cockpit_tui_pid".into(), ";".into()]);
     a.extend(["set-option".into(), "-ga".into(), OPTION.into(), entry(chan)]);
     a
 }
