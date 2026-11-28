@@ -180,7 +180,8 @@ fn epoch() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-fn all_digits(s: &str) -> bool {
+/// Not empty, and every byte an ASCII digit: a pid, a tick count, an epoch second.
+pub(crate) fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
 }
 

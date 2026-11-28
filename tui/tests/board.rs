@@ -1150,8 +1150,8 @@ fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
 
     // but the gate hashes the RENDERED durations, so a rail the reader can see
     // change still redraws -- and one they cannot does not
-    assert_ne!(extra(&a, &pvs, 0), extra(&older, &pvs, 0), "32s -> 33s is visible");
-    assert_ne!(hash_rows(&a, &extra(&a, &pvs, 0)), hash_rows(&older, &extra(&older, &pvs, 0)));
+    assert_ne!(extra(&a, &pvs), extra(&older, &pvs), "32s -> 33s is visible");
+    assert_ne!(hash_rows(&a, &extra(&a, &pvs)), hash_rows(&older, &extra(&older, &pvs)));
 
     let mut invisible = fixture();
     for p in &mut invisible {
@@ -1159,37 +1159,36 @@ fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
             p.since = Some(721);
         }
     }
-    assert_eq!(extra(&a, &pvs, 0), extra(&invisible, &pvs, 0), "12m0s and 12m1s both render 12m");
-    assert_eq!(
-        hash_rows(&a, &extra(&a, &pvs, 0)),
-        hash_rows(&invisible, &extra(&invisible, &pvs, 0))
-    );
+    assert_eq!(extra(&a, &pvs), extra(&invisible, &pvs), "12m0s and 12m1s both render 12m");
+    assert_eq!(hash_rows(&a, &extra(&a, &pvs)), hash_rows(&invisible, &extra(&invisible, &pvs)));
 
     // and a changed preview always dirties it
     let mut moved = pvs.clone();
     moved[0] = Some("something else".into());
-    assert_ne!(extra(&a, &pvs, 0), extra(&a, &moved, 0));
+    assert_ne!(extra(&a, &pvs), extra(&a, &moved));
 }
 
-/// #1600: the allowance prints its countdown off the clock, so the gate takes it as
-/// printed: a minute on redraws, a second inside the same printed minute does not.
+/// #1600: the allowance's countdown changes at every fetch, so the rows' hash skips it and
+/// the gate takes it as printed: a minute less redraws, a second inside the same printed
+/// minute does not.
 #[test]
 fn the_gate_redraws_when_the_printed_countdown_moves() {
-    use cockpit_tui::data::{Allowance, Window};
-    let t = 1_800_000_000;
-    let mut a = fixture();
-    a[0].allow = Some(Allowance {
-        at: t,
-        five: Some(Window {
-            used: 42,
-            resets: t + 7830,
-        }),
-        week: None,
-    });
+    use cockpit_tui::data::{Allowance, Window, hash_rows};
+    let with = |left: u64| {
+        let mut ps = fixture();
+        ps[0].allow = Some(Allowance {
+            age: 30,
+            five: Some(Window { used: 42, left }),
+            week: None,
+        });
+        ps
+    };
+    let (a, sooner, minute) = (with(7830), with(7829), with(7770));
     let pvs = previews();
     let extra = board::gate_extra;
-    assert_ne!(extra(&a, &pvs, t), extra(&a, &pvs, t + 60), "2h10m -> 2h09m is visible");
-    assert_eq!(extra(&a, &pvs, t), extra(&a, &pvs, t + 1), "2h10m30s and 2h10m29s both print 2h10m");
+    assert_eq!(hash_rows(&a, ""), hash_rows(&minute, ""), "the countdown is not in the rows' hash");
+    assert_ne!(extra(&a, &pvs), extra(&minute, &pvs), "2h10m -> 2h09m is visible");
+    assert_eq!(extra(&a, &pvs), extra(&sooner, &pvs), "2h10m30s and 2h10m29s both print 2h10m");
 }
 
 /// Every SGR parameter crossterm emitted, in order.

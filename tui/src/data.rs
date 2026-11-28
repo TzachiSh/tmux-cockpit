@@ -256,71 +256,64 @@ pub struct Pane {
     /// none. Shown before the title, never in its place: [`role_title`]
     pub role: String,
     /// #1600: the 5-hour and weekly allowance the status line shim read, `@panestate_rl`
-    /// (field 21); `None` when the pane has none or it is not the shim's shape
+    /// (field 21), as the fetch saw it; `None` when the pane has none, it is not the shim's
+    /// shape, or no window of it is still open
     pub allow: Option<Allowance>,
 }
 
-/// #1600: one window of a status line reading: the share used, in whole percent rounded up,
-/// and when the window resets, in epoch seconds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// #1600: one window of a status line reading, at the fetch: the share used, in whole
+/// percent rounded up, and the seconds left until it resets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
     pub used: u8,
-    pub resets: u64,
+    pub left: u64,
 }
 
 /// The furthest a window's reset can be: a week and an hour. A reset further away, or one
 /// already past, is not the window's now, so it shows nothing (#1600).
 pub const RESET_MAX: u64 = 7 * 86400 + 3600;
 
-impl Window {
-    /// Seconds until the reset, or `None` when it is past or more than [`RESET_MAX`] away.
-    pub fn left(self, now: u64) -> Option<u64> {
-        let s = self.resets.saturating_sub(now);
-        (1..=RESET_MAX).contains(&s).then_some(s)
-    }
-}
-
-/// #1600: the allowance Claude Code passed to the status line, as scripts/agent-context
-/// writes it to `@panestate_rl`: `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>`, the
-/// minute it read them first and `-_-` for a window the payload lacked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// #1600: the allowance Claude Code passed to the status line, at the fetch: how long ago
+/// the shim read it, counted from the minute it stamped, and each window still open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Allowance {
-    /// when the shim read it, epoch seconds
-    pub at: u64,
+    pub age: u64,
     pub five: Option<Window>,
     pub week: Option<Window>,
 }
 
 impl Allowance {
-    /// `None` for a value not of the shim's shape, or with neither window: every number is
-    /// plain digits and a used share is at most 100.
-    pub fn parse(s: &str) -> Option<Self> {
-        let num = |x: &str| {
-            if x.bytes().all(|b| b.is_ascii_digit()) {
-                x.parse::<u64>().ok()
-            } else {
-                None
-            }
-        };
+    /// `@panestate_rl` as scripts/agent-context writes it,
+    /// `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>` in epoch seconds, read at `now`.
+    /// `-_-` is the one spelling of a window the payload lacked. Any other window not of
+    /// that shape (a share over 100, a number not plain digits) makes the whole value
+    /// `None`. A window whose reset is past, or more than [`RESET_MAX`] away, is left out,
+    /// and a value with no window left is `None`.
+    pub fn parse(s: &str, now: u64) -> Option<Self> {
+        let num = |x: &str| if agents::all_digits(x) { x.parse::<u64>().ok() } else { None };
+        // Some(None): no such window, or none open now; None: not the shim's shape
         let window = |u: &str, r: &str| {
-            Some(Window {
-                used: u8::try_from(num(u)?).ok().filter(|&n| n <= 100)?,
-                resets: num(r)?,
-            })
+            if (u, r) == ("-", "-") {
+                return Some(None);
+            }
+            let used = u8::try_from(num(u)?).ok().filter(|&n| n <= 100)?;
+            let left = num(r)?.saturating_sub(now);
+            Some((1..=RESET_MAX).contains(&left).then_some(Window { used, left }))
         };
         let f: Vec<&str> = s.split('_').collect();
         let [at, u5, r5, u7, r7] = f[..] else { return None };
         let a = Allowance {
-            at: num(at)?,
-            five: window(u5, r5),
-            week: window(u7, r7),
+            age: now.saturating_sub(num(at)?),
+            five: window(u5, r5)?,
+            week: window(u7, r7)?,
         };
         (a.five.is_some() || a.week.is_some()).then_some(a)
     }
 }
 
-/// Skips the three ages, which change every tick and would defeat the redraw
-/// gate. Destructured so a new field fails to compile until it is placed.
+/// Skips the three ages and the allowance's countdown (#1600), which change every tick and
+/// would defeat the redraw gate: `board::gate_extra` takes them as printed. Destructured so
+/// a new field fails to compile until it is placed.
 impl Hash for Pane {
     fn hash<H: Hasher>(&self, h: &mut H) {
         let Pane {
@@ -358,14 +351,14 @@ impl Hash for Pane {
             model,
             ctx,
             role,
-            allow,
+            allow: _,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
             model, role,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n, ended, doing_failed, ctx, allow).hash(h);
+        (state, pinned, delivered, subs_n, ended, doing_failed, ctx).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -1211,7 +1204,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         // a pane title, so untrusted: control and bidi characters go
         job: crate::pick::clean(f[16]).trim().to_string(),
         role: role_of(f),
-        allow: Allowance::parse(f[21]),
+        allow: Allowance::parse(f[21], sessions::now()),
         ..Default::default()
     };
     let by = if by_cmd {

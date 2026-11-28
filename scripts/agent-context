@@ -23,7 +23,8 @@ command -v jq >/dev/null 2>&1 || exit 0
 # The allowance is the minute read, then each window's used share, whole and rounded up,
 # and its resets_at: `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>`, `-_-` for a
 # window the payload lacks, and empty with neither. It starts with a digit, so tmux never
-# reads it as a flag. Claude Code sends rate_limits to subscribers only, after the
+# reads it as a flag. A share is clamped to 0 to 100, with "<= 0" since jq's ceil of -0.5 is
+# -0, which prints as "-0". Claude Code sends rate_limits to subscribers only, after the
 # session's first answer.
 out=$(jq -r '
     ([(.context_window.used_percentage
@@ -41,7 +42,7 @@ out=$(jq -r '
          [($r.five_hour, $r.seven_day)
           | if type == "object" and (.used_percentage | type) == "number"
                and (.resets_at | type) == "number"
-            then (.used_percentage | ceil | if . < 0 then 0 elif . > 100 then 100 else . end
+            then (.used_percentage | ceil | if . <= 0 then 0 elif . > 100 then 100 else . end
                   | tostring) + "_" + (.resets_at | floor | tostring)
             else "-_-" end]
          | if . == ["-_-", "-_-"] then "" else "\(now / 60 | floor * 60)_\(join("_"))" end
@@ -65,7 +66,7 @@ case "$pct" in
         # format past 100 ms to "", which must write, not skip. The cells are tested again
         # after a write, as agent-state's put does; the gauge is a literal, never cut.
         # The allowance has its own test, second in the call, so a minute's new stamp
-        # rewrites only it; its set is -q, so a cut name ends that set alone (#1450).
+        # rewrites only it.
         cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
         ct="#{?#{e|==:$cells,#{@cockpit_ctx_all}},1,0}"
         cs="set-option -F -t $pane @cockpit_ctx_all '$cells'"

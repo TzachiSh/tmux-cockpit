@@ -397,11 +397,11 @@ fn names(g: &Glyphs, s: &str) -> String {
 
 /// The redraw gate's extra input: `hash_rows` skips the ages, so hash the rail's
 /// rendered text, which changes only when the printed age does. The allowance's
-/// countdown and age are printed off `now`, so they go in as printed too (#1600).
-pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>], now: u64) -> String {
+/// countdown goes in the same way, as printed (#1600).
+pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>]) -> String {
     let mut out: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
     out.extend(ps.iter().filter_map(|p| p.since).map(fmt_dur));
-    out.extend(ps.iter().filter_map(|p| p.allow.as_ref().and_then(|a| allow_text(a, now, "·"))));
+    out.extend(ps.iter().filter_map(|p| p.allow.as_ref()).map(|a| allow_text(a, "·")));
     out
 }
 
@@ -526,7 +526,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         block = block.title(Line::from(Span::styled(format!(" {} ", pane_mark(g)), Style::new().fg(th.accent))).right_aligned());
     }
     // #1330 A2, #1600: the bottom border holds nothing else, so nothing above moves for it
-    if let Some(foot) = tile_foot(p, g, (cell.width as usize).saturating_sub(4), crate::data::sessions::now()) {
+    if let Some(foot) = tile_foot(p, g, (cell.width as usize).saturating_sub(4)) {
         block = block.title_bottom(Line::from(Span::styled(foot, Style::new().fg(th.meta))).right_aligned());
     }
     let inner = block.inner(cell);
@@ -556,8 +556,8 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
 
 /// The card's bottom border: the allowance, then the model and the context, else the
 /// allowance alone, else the context alone, each whole in `w` or not at all (#1330 A2, #1600).
-fn tile_foot(p: &Pane, g: &Glyphs, w: usize, now: u64) -> Option<String> {
-    let allow = p.allow.as_ref().and_then(|a| allow_text(a, now, g.dot));
+fn tile_foot(p: &Pane, g: &Glyphs, w: usize) -> Option<String> {
+    let allow = p.allow.as_ref().map(|a| allow_text(a, g.dot));
     let ctx = ctx_text(p, g);
     let both = allow.as_ref().zip(ctx.as_ref()).map(|(a, c)| format!("{a} {} {c}", g.dot));
     [both, allow, ctx]
@@ -583,23 +583,15 @@ fn ctx_text(p: &Pane, g: &Glyphs) -> Option<String> {
 /// answer, so an older reading is a quiet agent's, and its account may have moved since.
 const AGED: u64 = 5 * 60;
 
-/// #1600: `5h 58% 2h10m · 7d 82% 3d`, what is left of each window and the time to its
-/// reset, a window [`Window::left`] refuses left out, and `12m ago` last once the reading
-/// is [`AGED`] old. `None` with no window left.
-fn allow_text(a: &Allowance, now: u64, dot: &str) -> Option<String> {
-    let win = |label: &str, w: Option<Window>| {
-        let w = w?;
-        Some(format!("{label} {}% {}", 100 - w.used, fmt_dur(w.left(now)?)))
-    };
+/// #1600: `5h 58% 2h10m · 7d 82% 3d`, what is left of each open window and the time to its
+/// reset, and `12m ago` last once the reading is [`AGED`] old.
+fn allow_text(a: &Allowance, dot: &str) -> String {
+    let win = |label: &str, w: Option<Window>| w.map(|w| format!("{label} {}% {}", 100 - w.used, fmt_dur(w.left)));
     let mut parts: Vec<String> = [win("5h", a.five), win("7d", a.week)].into_iter().flatten().collect();
-    if parts.is_empty() {
-        return None;
+    if a.age >= AGED {
+        parts.push(format!("{} ago", fmt_dur(a.age)));
     }
-    let age = now.saturating_sub(a.at);
-    if age >= AGED {
-        parts.push(format!("{} ago", fmt_dur(age)));
-    }
-    Some(parts.join(format!(" {dot} ").as_str()))
+    parts.join(format!(" {dot} ").as_str())
 }
 
 fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<Line<'static>> {
@@ -4352,7 +4344,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 if top != was && !list {
                     ask(Kind::Look, here, sel, top, list, &pick);
                 }
-                let mut extra = gate_extra(&panes, &pvs, crate::data::sessions::now());
+                let mut extra = gate_extra(&panes, &pvs);
                 if list {
                     extra.push_str(&nav.tree_gate(&panes));
                     extra.push_str(read_gate(pick.as_deref(), &seen));
