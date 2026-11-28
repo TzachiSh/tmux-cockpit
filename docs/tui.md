@@ -1732,6 +1732,18 @@ Explain draws it (#935, "Explain shows it" below).
   no branch, tag, remote-tracking ref or stash holds any more (a force-push or
   a reset whose old commits nothing else keeps, a deleted branch), or that is
   not in the repo, gives one item instead: `history rewritten since <time>`.
+- **Folders.** One line under the commits names the top-level folders and
+  root files the listed commits touched, `in: tui/, docs/, README.md` (#1612).
+  It comes from `git log --no-renames --root --name-only` over those commits, a
+  git call of its own started beside the log, within the same 1 s. A folder
+  keeps its `/` and a root file shows as its name. The names go most commits
+  first, then by name, and past six (`changes::FOLDERS_SHOWN`) end in
+  `and K more`. A move names the folder it leaves and the one it enters, and a
+  merge names nothing of its own. With commits cut past the cap the line reads
+  `in, for the 20 listed: ...`. A folder call past the time limit leaves the
+  commits as they are, drops the line and adds the note `git: took too long,
+  folders left out`, which does not stop the list being marked seen. One that
+  fails (a treeless partial clone, say) leaves the line out quietly.
 - **GitHub.** With `origin` on github.com: `gh pr list` and `gh issue list`,
   searched for `updated:>=<last seen>`, and `gh run list` for the branch's
   latest run, each with `-R github.com/<owner>/<repo>` and started from `/`, so
@@ -1744,8 +1756,9 @@ Explain draws it (#935, "Explain shows it" below).
 - **Caps.** At most 20 items a kind (`changes::CAP`, which the owner may
   change), newest first, then `and K more`. gh is asked for 100 at most, so 100
   back reads `and K or more`.
-- **Outside text.** Commit subjects, PR and issue titles and workflow names go
-  through `redact::redact_clean`, then become one line, cut at 200 characters.
+- **Outside text.** Commit subjects, folder and file names, PR and issue titles
+  and workflow names go through `redact::redact_clean`, then become one line,
+  cut at 200 characters.
 - **Failing quietly.** No GitHub remote, no `gh` on PATH, gh not logged in
   (its exit 4), a timeout (the whole process group killed), gh printing
   nothing, and gh printing something that is not a JSON array each leave the

@@ -276,6 +276,185 @@ fn collecting_never_writes_the_last_seen_store() {
     assert_eq!(std::fs::read(r.store().join(repo_key(d.to_str().unwrap()))).unwrap(), before);
 }
 
+// ---- the folders the listed commits touched (#1612) ----
+
+/// A commit that writes each of `files`, their folders made, with `msg` as its
+/// subject, and its full sha.
+fn commit_files(dir: &Path, msg: &str, files: &[&str]) -> String {
+    for f in files {
+        let p = dir.join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, format!("{msg}\n")).unwrap();
+    }
+    git(dir, &[&["add", "--"][..], files].concat());
+    commit(dir, msg)
+}
+
+/// The list's folder line, if it has one.
+fn folder_line(c: &Changes) -> Option<String> {
+    c.lines()
+        .into_iter()
+        .find(|l| l.starts_with("in: ") || l.starts_with("in, for the "))
+}
+
+/// A rig repo whose last-seen record is its first commit.
+fn seen_repo(r: &Rig) -> PathBuf {
+    let d = r.repo("r", false);
+    r.seen(&d, &git(&d, &["rev-parse", "HEAD"]), T0);
+    d
+}
+
+/// tui/ in two commits, docs/ in one that writes two files there: tui/ first.
+#[test]
+fn folders_follow_the_commits_most_touched_first() {
+    let r = Rig::new("folders");
+    let d = seen_repo(&r);
+    let a = commit_files(&d, "a", &["tui/src/a.rs"]);
+    let b = commit_files(&d, "b", &["docs/a.md", "docs/b.md"]);
+    let c = commit_files(&d, "c", &["tui/b.rs"]);
+    let want = [
+        format!("{} c", short(&c)),
+        format!("{} b", short(&b)),
+        format!("{} a", short(&a)),
+        "in: tui/, docs/".to_string(),
+        Note::NoGithubRemote.to_string(),
+    ];
+    assert_eq!(collect(&mut r.collector(), &d).lines(), want);
+}
+
+#[test]
+fn a_root_file_is_named_as_it_is() {
+    let r = Rig::new("folderroot");
+    let d = seen_repo(&r);
+    commit_files(&d, "readme", &["README.md"]);
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some("in: README.md"));
+}
+
+#[test]
+fn a_folder_line_comes_only_with_listed_commits() {
+    let r = Rig::new("folderseen");
+    let d = r.repo("r", false);
+    r.seen(&d, &commit_files(&d, "docs", &["docs/a.md"]), T0);
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)), None, "nothing new");
+    commit_files(&d, "tui", &["tui/a.rs"]);
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some("in: tui/"));
+}
+
+/// Three commits in old/, then CAP in new/: the line names new/ alone, after the
+/// count, for the commits listed.
+#[test]
+fn only_the_listed_commits_folders_are_named_past_the_cap() {
+    assert_eq!(CAP, 20);
+    let r = Rig::new("foldercap");
+    let d = seen_repo(&r);
+    for i in 0..CAP + 3 {
+        let f = if i < 3 { format!("old/{i}") } else { format!("new/{i}") };
+        commit_files(&d, &format!("c{i}"), &[f.as_str()]);
+    }
+    let lines = collect(&mut r.collector(), &d).lines();
+    let tail = [
+        "and 3 more".to_string(),
+        "in, for the 20 listed: new/".into(),
+        Note::NoGithubRemote.to_string(),
+    ];
+    assert_eq!(lines[CAP..], tail, "{lines:?}");
+}
+
+#[test]
+fn a_long_folder_list_is_cut_with_a_count() {
+    let r = Rig::new("foldercut");
+    let d = seen_repo(&r);
+    commit_files(&d, "wide", &["a/1", "b/1", "c/1", "d/1", "e/1", "f/1", "g/1", "h/1", "i/1"]);
+    let want = "in: a/, b/, c/, d/, e/, f/ and 3 more";
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some(want));
+}
+
+/// A move touches the folder it leaves too, whatever the repo's rename setting.
+#[test]
+fn a_move_names_the_folder_left_and_the_one_entered() {
+    let r = Rig::new("foldermove");
+    let d = r.repo("r", false);
+    git(&d, &["config", "diff.renames", "true"]);
+    r.seen(&d, &commit_files(&d, "x", &["docs/x.md"]), T0);
+    // git mv makes no folder: the move's target must exist
+    std::fs::create_dir_all(d.join("tui")).unwrap();
+    git(&d, &["mv", "docs/x.md", "tui/x.md"]);
+    commit(&d, "move");
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some("in: docs/, tui/"));
+}
+
+#[test]
+fn folder_names_come_out_redacted_on_one_line() {
+    let r = Rig::new("folderclean");
+    let d = seen_repo(&r);
+    commit_files(&d, "odd", &["sk-ant-MADEUPFAKEFAKE00/k", "new\nline/f"]);
+    let want = "in: [hidden]/, new line/";
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some(want));
+}
+
+/// Nothing seen, so the newest commits, the root among them, in a repo whose
+/// config hides a root commit's files from `git log`.
+#[test]
+fn the_root_commit_names_its_folders_whatever_log_show_root_says() {
+    let r = Rig::new("foldershowroot");
+    let d = r.s.join("r");
+    std::fs::create_dir_all(&d).unwrap();
+    git(&d, &["init", "-q", "-b", "main"]);
+    git(&d, &["config", "log.showRoot", "false"]);
+    commit_files(&d, "root", &["docs/a.md"]);
+    assert_eq!(folder_line(&collect(&mut r.collector(), &d)).as_deref(), Some("in: docs/"));
+}
+
+/// The child half of the row below, in a process whose PATH starts with a git
+/// that sleeps on `--name-only`: the folder call outlives the 2 s budget.
+#[test]
+fn folders_slow_child() {
+    if std::env::var_os("CHANGES_FOLDERS_SLOW_CHILD").is_none() {
+        return;
+    }
+    let r = Rig::new("folderslow");
+    let d = seen_repo(&r);
+    let two = commit_files(&d, "two", &["docs/a.md"]);
+    let mut c = r.collector();
+    c.git_budget = Duration::from_secs(2);
+    let t = std::time::Instant::now();
+    let got = collect(&mut c, &d);
+    let took = t.elapsed();
+    let want = [
+        format!("{} two", short(&two)),
+        "git: took too long, folders left out".to_string(),
+        Note::NoGithubRemote.to_string(),
+    ];
+    assert_eq!(got.lines(), want);
+    assert!(took < Duration::from_secs(10), "the collect took {took:?}");
+    eprintln!("the-slow-folders-kept-the-commits");
+}
+
+/// A folder call past the budget costs its line and says so; the commits stay
+/// and the collect keeps its time limit.
+#[test]
+fn a_slow_folder_listing_keeps_the_commits_inside_the_budget() {
+    let s = Scratch::fresh(std::env::temp_dir().join(format!("cockpit-changes-slowgit-{}", std::process::id())));
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let real = std::env::split_paths(&path).map(|d| d.join("git")).find(|g| g.is_file());
+    let real = real.expect("a git on PATH");
+    let body = format!(
+        "#!/bin/sh\nfor a; do [ \"$a\" = --name-only ] && exec sleep 20; done\nexec '{}' \"$@\"\n",
+        real.display()
+    );
+    write_exec(&s.join("git"), &body);
+    let first = std::iter::once(s.to_path_buf()).chain(std::env::split_paths(&path));
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "folders_slow_child", "--nocapture"])
+        .env("PATH", std::env::join_paths(first).unwrap())
+        .env("CHANGES_FOLDERS_SLOW_CHILD", "1")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(said.lines().any(|l| l == "the-slow-folders-kept-the-commits"), "{said}");
+}
+
 // ---- the last-seen file ----
 
 #[test]
