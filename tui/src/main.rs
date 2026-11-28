@@ -140,11 +140,6 @@ fn panel(args: &[String]) {
 }
 
 fn main() {
-    // #295: SIGUSR1's default action is terminate. Nothing sends it since #224,
-    // but an agent-state from before then still signals a @cockpit_tui_pid an
-    // older board left standing, and that pid can be any cockpit-tui now.
-    // SAFETY: signal() with SIG_IGN installs no code and touches no memory.
-    unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action: Option<board::Exit> = match args.first().map(String::as_str) {
         Some("board") => match board::opts(&args[1..]) {

@@ -294,10 +294,10 @@ pub fn rows_pass_handed(rows: &[&str], signals: &'static [libc::c_int]) -> u32 {
     handed(rows, signals, &[], HANDED_FOR).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// The bits of the `field` line, `SigIgn:` or `SigBlk:`, of `pid`'s
+/// The bits of the `field` line, `SigIgn:`, `SigCgt:` or `SigBlk:`, of `pid`'s
 /// /proc status: None where /proc has no such process.
 #[allow(dead_code)]
-fn status_bits(pid: u32, field: &str) -> Option<u64> {
+pub fn status_bits(pid: u32, field: &str) -> Option<u64> {
     let s = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let bits = s.lines().find_map(|l| l.strip_prefix(field))?;
     u64::from_str_radix(bits.trim(), 16).ok()
