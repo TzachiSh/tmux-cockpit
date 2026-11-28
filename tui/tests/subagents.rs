@@ -612,6 +612,16 @@ fn the_state_root_is_xdg_state_home_else_home_local_state() {
     assert_eq!(state_dir(Some(""), Some("")), None);
 }
 
+/// #1588: store::xdg_dir's rule, as scripts/lib/xdg.sh has it: a relative XDG_STATE_HOME is
+/// ignored, and a relative HOME gives no folder.
+#[test]
+fn a_relative_xdg_state_home_or_home_is_ignored_as_xdg_dir_ignores_it() {
+    let sub = |r: &str| Some(PathBuf::from(r).join("tmux-cockpit").join("subs"));
+    assert_eq!(state_dir(Some("rel"), Some("/h")), sub("/h/.local/state"));
+    assert_eq!(state_dir(Some("rel"), Some("h")), None);
+    assert_eq!(state_dir(None, Some("h")), None);
+}
+
 #[test]
 fn the_hash_ignores_active_at_and_counts_the_new_states() {
     let s = Sub {

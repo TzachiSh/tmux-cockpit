@@ -127,7 +127,8 @@ agent's `tmux-review --request` gets `no review opened` and that reason, status
 1. The Stop hook's ◆ then stays as it was: such a diff neither sets nor clears
 it (#944). The same holds for a pane whose work dir cannot be found (status 2),
 when tmux-review cannot run at all, and when it cannot load, under bash older
-than 4 or with a library that fails (status 3): only a tree with no difference,
+than 4 or with a library that fails (status 3), and with no state folder (status 4, #1588):
+only a tree with no difference,
 or a work dir outside any git tree, clears the ◆ (#959).
 
 **Big files are counted, not hashed.** To tell whether a file changed at all
@@ -274,7 +275,7 @@ What this deliberately does **not** do, and why:
   (claude-code issues #63190, #30492).
 - **No review daemon, server, or port.** What *does* outlive the popup is
   one directory per review under
-  `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
+  `$XDG_STATE_HOME/tmux-cockpit/review/<pane>-<root>/` (`~/.local/state` if not absolute),
   created `0700`, holding `comments.md`, the base `b` chose
   (`comments.md.base`), revdiff's history, the batches already delivered
   (`delivered.md`) and any queued spool. It exists so a dropped SSH client,

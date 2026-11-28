@@ -15,7 +15,12 @@ me=${BASH_SOURCE[0]}; case $me in (*/*) ;; (*) me=./$me ;; esac
     while [ -L "$me" ] && [ $((n += 1)) -le 40 ] && t=$(readlink "$me"); do
         case $t in (/*) me=$t ;; (*) me=${me%/*}/$t ;; esac; done; printf %s "$me")
 DIR="$(cd -P "$(dirname "$me")/.." && pwd)" || exit 1
-LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
+# shellcheck source=lib/xdg.sh
+. "$DIR/scripts/lib/xdg.sh" || exit 1
+# The state folder (#1588): the log's default and the hidden panels' folder. With none the panel
+# refuses below, once it can say so.
+STATE='' LOG=${COCKPIT_LOG:-}
+state_home && STATE=$REPLY && LOG=${LOG:-$STATE/tmux-cockpit/tui.log}
 # shellcheck source=lib/pane.sh
 . "$DIR/scripts/lib/pane.sh" || exit 1
 # shellcheck source=lib/tui.sh
@@ -86,6 +91,8 @@ tell() {
     else said fail "$1"; fi
 }
 
+# said, not tell: with no state folder there may be no log to tell it to
+[ -n "$STATE" ] || { said fail "cockpit: $NO_STATE_HOME"; exit 0; }
 if [ ! -x "$BIN" ]; then
     tell "cockpit: the panel needs cockpit-tui: run $DIR/install.sh"
     exit 0
@@ -97,7 +104,7 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 # A hidden panel is one file per pane, keyed on the server's pid too: a new
 # server hands out %0 again, and other -L servers share this directory. One the
 # binary would refuse as over a day old (its HIDE_AGE) goes here, any server's.
-HDIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel
+HDIR=$STATE/tmux-cockpit/panel
 spid=$(tmux display -p '#{pid}' 2>/dev/null) saved='' dropped=''
 case "$spid" in ''|*[!0-9]*) ;; *) saved="$HDIR/$spid-${PANE#%}.state" ;; esac
 if [ -n "$saved" ] && [ -d "$HDIR" ]; then

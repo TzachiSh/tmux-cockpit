@@ -168,7 +168,8 @@ A Stop whose `tmux-review --delta` cannot tell leaves the `◆` as it was and sa
 the pane option `@cockpit_review_err`, as the poller does in `@cockpit_poll_err`
 ([Agent view and background jobs](#agent-view-and-background-jobs)): `the diff cannot be
 read` (exit 2: the diff, the pane's work dir or its repo), `tmux-review cannot load`
-(exit 3), or `tmux-review cannot run (exit N)` (126, 127 or a signal). A Stop whose payload
+(exit 3), or `tmux-review cannot run (exit N)` (4 with no state folder, 126, 127 or a
+signal). A Stop whose payload
 `review-gate` cannot read, past its 2 s bound or with `head` failing, cannot tell a paused
 Stop from a finished one: it leaves the `◆` too, with `the Stop payload cannot be read`
 (#315). A message on the status line says it once per new reason, and the next Stop that
@@ -290,7 +291,8 @@ Badge semantics (owner decision, #336; the board draws them, #313):
 `SubagentStart`, `SubagentStop`, `TeammateIdle` and `SessionEnd` also run
 `agent-state sub-start|sub-stop|sub-idle|sub-end` (#361). They set no pane state and call no
 tmux: each appends one line to
-`${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log`, `<epoch>\t<event>\t<agent_id>`
+`$XDG_STATE_HOME/tmux-cockpit/subs/<session_id>.log` (`~/.local/state` if not absolute),
+`<epoch>\t<event>\t<agent_id>`
 with the event `start`, `stop` or `idle`. `sub-end` deletes the session's log and any log
 unwritten for 7 days, and the same for the `.live` file below. With
 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` on, the hooks see no `XDG_STATE_HOME` and write the log under

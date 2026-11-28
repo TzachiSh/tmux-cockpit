@@ -3,7 +3,7 @@
 //! so every test here holds fake's environment lock.
 mod fake;
 
-use cockpit_tui::data::info::{Facts, gather, git_root};
+use cockpit_tui::data::info::{Facts, cksum, gather, git_root};
 use cockpit_tui::data::list_panes;
 use cockpit_tui::data::workdir::Source;
 use fake::EnvHeld;
@@ -513,4 +513,27 @@ fn the_info_title_names_the_pane_by_its_label() {
     let top = term.backend().to_string().lines().next().unwrap_or_default().to_string();
     assert!(top.contains(" info · w:0 · fix the tests "), "{top}");
     assert!(!top.contains("%1"), "{top}");
+}
+
+/// #1588: the review dir is under the state folder by `store::xdg_dir`, where tmux-review
+/// keeps it: a relative XDG_STATE_HOME is ignored, so the one under HOME's .local/state shows.
+#[test]
+fn a_relative_xdg_state_home_is_ignored_for_the_review_dir() {
+    let g = fake::env_lock();
+    let t = Tmp::new("xdgrel");
+    let (wt, cwd) = (t.sub("wt"), t.sub("cwd"));
+    let mut env = rig(&t, &cwd, "", &wt);
+    let key = format!("1-{}", cksum(git_root(&wt).as_bytes()));
+    let sess = t.0.join("home/.local/state/tmux-cockpit/review").join(key);
+    std::fs::create_dir_all(&sess).unwrap();
+    env.push(("XDG_STATE_HOME", "rel".into()));
+    fake::checked_state_held(&g);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["info", "--text", "%1"])
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .current_dir(&cwd)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains(&format!("review dir {}", sess.display())), "{text}");
 }

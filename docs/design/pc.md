@@ -606,7 +606,7 @@ Compose straight away (today it jumps; jumping is still `↵`).
 7. Sessions reorder only when an agent's state changes (the sort key has no
    clock), the same promise today's grid makes.
 8. Folds and the kept filter live in
-   `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/board.state` (folded session
+   `$XDG_STATE_HOME/tmux-cockpit/board.state`, `~/.local/state` if not absolute (folded session
    names, the query, the last selection), so the reopened board of §11 and the
    next `prefix w` look the same. A file, not a tmux option: no write to the
    server, and `COCKPIT_READONLY` skips it.

@@ -76,7 +76,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base,
                                         1 when not, 2 when it cannot tell (no work dir,
                                         a repo git refuses, or the diff cannot be read),
-                                        3 when it cannot load: bash older than 4, or a library
+                                        3 when it cannot load: bash older than 4, or a library,
+                                        4 when there is no state folder (lib/xdg.sh)
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review --dir <pane>              the tree <pane> works in, as the board shows it
 In revdiff: its own keys (? lists them); q saves the comments, Q discards.
@@ -89,7 +90,7 @@ USAGE
 # cannot take it along. Keyed on pane + repo root; 0700, as it holds the diff.
 # `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
 session_dir() {               # <pane-id> <root>
-    printf '%s/tmux-cockpit/review/%s-%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
+    printf '%s/tmux-cockpit/review/%s-%s' "$STATE" \
         "${1#%}" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
 }
 
@@ -116,6 +117,13 @@ case "${1:-}" in
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
     "")                         need review-diff.sh review-deliver.sh review-fleet.sh ;;
+esac
+# A review's dir is in the state folder (lib/xdg.sh, #1588): with none, the modes that keep one
+# refuse. 4, as --delta's 1 is a clean tree and its 2 a diff it cannot read.
+case "${1:-}" in --delta|--request|"")
+    need xdg.sh
+    state_home || { printf 'cockpit: %s\n' "$NO_STATE_HOME" >&2; exit 4; }
+    STATE=$REPLY ;;
 esac
 
 case "${1:-}" in

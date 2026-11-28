@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The per-session subagent event log (#361). Sourced, never run; no hook.sh needed.
 #
-#   ${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log
+#   <the state folder, lib/xdg.sh>/tmux-cockpit/subs/<session_id>.log
 #   one line per event: <epoch>\t<start|stop|idle>\t<agent_id>
 #   a TaskStop (#403):  <epoch>\tkill\t<agent_id>                  a plain agent
 #                       <epoch>\tkill-tm\t<name>\t<description>    a teammate, mapped by the reader
@@ -20,10 +20,9 @@
 # That event says what the agent did last: a teammate's SubagentStop ends a turn, not the
 # agent, and no documented hook fires when TaskStop or a shutdown ends one.
 
-subs_dir() {
-    local base=${XDG_STATE_HOME:-}
-    [ -n "$base" ] || { [ -n "${HOME:-}" ] || return 1; base=$HOME/.local/state; }
-    REPLY=$base/tmux-cockpit/subs
+subs_dir() {                  # -> REPLY; 1 with no state folder (lib/xdg.sh, #1588)
+    state_home || return 1
+    REPLY=$REPLY/tmux-cockpit/subs
 }
 
 # One id of the payload: "key": "value", the value only [A-Za-z0-9_-], 1 to 81 bytes. A
@@ -41,6 +40,8 @@ subs_id() {                   # <key> -> REPLY
 
 # shellcheck source=bound.sh
 . "${BASH_SOURCE[0]%/*}/bound.sh" || return 1
+# shellcheck source=xdg.sh
+. "${BASH_SOURCE[0]%/*}/xdg.sh" || return 1
 
 # The payload: the first line, bounded by 2 s (#320, #322, #746: a writer
 # that sends neither a newline nor EOF must not hold the hook) and by 256 KB: the second

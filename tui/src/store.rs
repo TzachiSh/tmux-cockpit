@@ -159,7 +159,8 @@ pub trait Store: Send + Sync {
 
 /// An XDG base folder: `var` (XDG_STATE_HOME, XDG_CONFIG_HOME) when it is
 /// absolute, else `$HOME/<fallback>`. A relative value is ignored, as the XDG
-/// spec says; `None` without either. The one rule for both homes (#1508).
+/// spec says; `None` without either. The one rule for both homes (#1508). The shell's copy
+/// for the state folder is `scripts/lib/xdg.sh`'s `state_home` (#1588).
 pub fn xdg_dir(var: Option<&str>, home: Option<&str>, fallback: &str) -> Option<PathBuf> {
     match (var, home) {
         (Some(s), _) if s.starts_with('/') => Some(PathBuf::from(s)),

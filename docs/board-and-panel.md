@@ -25,7 +25,7 @@ back on the same pane, with the outcome as a note in its footer; a failure
 (`✕`) stays until a key. `i` never leaves it: the pane's info draws over the
 board. `@cockpit_board_return off` makes `r` and `f` one-way. The last
 selection, the folds and a kept filter are kept in
-`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
+`$XDG_STATE_HOME/tmux-cockpit/board.state` (`~/.local/state` if not absolute), so the next
 `prefix + w` opens the same way.
 
 A pane that shows a background job (the agent view, `claude attach`) runs no
