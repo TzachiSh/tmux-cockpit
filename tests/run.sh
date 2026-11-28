@@ -10617,13 +10617,58 @@ CXP=$("$TMUX_REAL" -L "$CX" list-panes -t t -F '#{pane_id}')
 # it into every pane), so set it here too: that is what points the shimmed
 # `tmux` at this pane's actual server, exactly as it would be in a real pane.
 CXTMUX="$SOCKDIR/$CX,0,0"
+cxm0=$(( $(date +%s) / 60 * 60 ))
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
     < "$DIR/tests/fixtures/statusline.json" >/dev/null
+cxm1=$(( $(date +%s) / 60 * 60 ))
 ctx=$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)
 case "$ctx" in
     [0-9]|[0-9][0-9]|100) ok "a real payload yields a percent" ;;
     *) bad "a real payload yields a percent" "an integer 0-100" "$ctx" ;;
 esac
+# #1600: the fixture's rate_limits in @panestate_rl, after the minute the shim read them: one
+# of the two minutes the call ran in.
+cxrl() { "$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_rl; }
+cxw="_31_1787560800_46_1787572800" cxg=$(cxrl)
+case $cxg in
+    "$cxm0$cxw"|"$cxm1$cxw") ok "the allowance is stored after the minute it was read (#1600)" ;;
+    *) bad "the allowance is stored after the minute it was read (#1600)" "$cxm0$cxw" "$cxg" ;;
+esac
+# A used share rounds up and a reset down. A window whose numbers are not numbers is no
+# window, as is one the payload lacks.
+cxj='{"context_window":{"used_percentage":5},"rate_limits":{'
+cxj=$cxj'"five_hour":{"used_percentage":"31","resets_at":1900000000},'
+cxj=$cxj'"seven_day":{"used_percentage":12.2,"resets_at":1900000000.7}}}'
+printf '%s' "$cxj" | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+cxg=$(cxrl)
+is "a share rounds up, a reset down, and a window that is not numbers is -_- (#1600)" \
+    "-_-_13_1900000000" "${cxg#*_}"
+printf '%s' '{"context_window":{"used_percentage":5}}' \
+    | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "a payload with no rate_limits clears the allowance (#1600)" "" "$(cxrl)"
+# A share over 100 or under 0 is clamped, -0 too: jq's ceil of -0.5 is -0, printed "-0".
+cxj='{"context_window":{"used_percentage":5},"rate_limits":{'
+cxj=$cxj'"five_hour":{"used_percentage":100.4,"resets_at":1900000000},'
+cxj=$cxj'"seven_day":{"used_percentage":-0.5,"resets_at":1900000000}}}'
+printf '%s' "$cxj" | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+cxg=$(cxrl)
+is "a share over 100 or under 0, -0 too, is clamped to 0 to 100 (#1600)" \
+    "100_1900000000_0_1900000000" "${cxg#*_}"
+# A rate_limits with no usable window is no reading, and a reset jq prints with an exponent
+# (1e+300) is not a number the board reads. Each clears the fixture's reading.
+cx_fix() {
+    TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
+        < "$DIR/tests/fixtures/statusline.json" >/dev/null
+}
+cx_fix
+printf '%s' '{"context_window":{"used_percentage":5},"rate_limits":{}}' \
+    | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "a rate_limits with no usable window clears the allowance (#1600)" "" "$(cxrl)"
+cx_fix
+cxj='{"context_window":{"used_percentage":5},"rate_limits":{'
+cxj=$cxj'"five_hour":{"used_percentage":31,"resets_at":1e300}}}'
+printf '%s' "$cxj" | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "a reset printed with an exponent clears the allowance (#1600)" "" "$(cxrl)"
 # The fallback branch sums cache tokens that can legitimately exceed
 # context_window_size (1900/1000 here) -- the write must still clamp to the
 # promised 0-100, not the raw ratio.
@@ -10704,15 +10749,29 @@ printf '%s\n' "\$*" >> "$CXCALLS"
 exec "$TMUX_REAL" "\$@"
 SHIMEOF
 chmod +x "$CXS/tmux"
-PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
-    < "$DIR/tests/fixtures/statusline.json" >/dev/null
-is "the first call writes the new value" "1" "$(wc -l < "$CXLOG")"
-PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
-    < "$DIR/tests/fixtures/statusline.json" >/dev/null
-is "a second call with the same value writes nothing" "1" "$(wc -l < "$CXLOG")"
+# The allowance carries the minute it was read (#1600), so a second call in a new minute
+# writes it again: a pair that crossed a minute is run again, three pairs at most in all. Each pair
+# starts with neither option set.
+cx_shim() {
+    PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
+        < "$DIR/tests/fixtures/statusline.json" >/dev/null
+}
+cx_pair() {
+    "$TMUX_REAL" -L "$CX2" set-option -pu -t "$CXP2" @panestate_ctx \; \
+        set-option -pu -t "$CXP2" @panestate_rl >/dev/null 2>&1
+    : > "$CXCALLS"; cxn0=$(wc -l < "$CXLOG"); cxm0=$(( $(date +%s) / 60 ))
+    cx_shim; cxn1=$(wc -l < "$CXLOG")
+    cx_shim; cxn2=$(wc -l < "$CXLOG"); cxm1=$(( $(date +%s) / 60 ))
+}
+cxt=0
+while cx_pair; [ "$cxm0" != "$cxm1" ] && [ $((cxt += 1)) -lt 3 ]; do :; done
+is "the first call writes the context and the allowance" "2" "$((cxn1 - cxn0))"
+is "a second call with the same payload in the same minute writes nothing" "0" \
+   "$((cxn2 - cxn1))$([ "$cxm0" = "$cxm1" ] || echo ", every pair crossed a minute")"
 is "and each call is one tmux invocation" "2" "$(wc -l < "$CXCALLS")"
-is "the stored value is still correct" "4" \
-   "$("$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_ctx)"
+is "the stored values are still correct" "4|$((cxm0 * 60))_31_1787560800_46_1787572800" \
+   "$("$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_ctx)|$(
+     "$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_rl)"
 "$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
 fi
 

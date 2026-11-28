@@ -255,10 +255,65 @@ pub struct Pane {
     /// #1409: the pane's own name, `@cockpit_role` (field 20), cleaned; `""` when it has
     /// none. Shown before the title, never in its place: [`role_title`]
     pub role: String,
+    /// #1600: the 5-hour and weekly allowance the status line shim read, `@panestate_rl`
+    /// (field 21), as the fetch saw it; `None` when the pane has none, it is not the shim's
+    /// shape, or no window of it is still open
+    pub allow: Option<Allowance>,
 }
 
-/// Skips the three ages, which change every tick and would defeat the redraw
-/// gate. Destructured so a new field fails to compile until it is placed.
+/// #1600: one window of a status line reading, at the fetch: the share used, in whole
+/// percent rounded up, and the seconds left until it resets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Window {
+    pub used: u8,
+    pub left: u64,
+}
+
+/// The furthest a window's reset can be: a week and an hour. A reset further away, or one
+/// already past, is not the window's now, so it shows nothing (#1600).
+pub const RESET_MAX: u64 = 7 * 86400 + 3600;
+
+/// #1600: the allowance Claude Code passed to the status line, at the fetch: how long ago
+/// the shim read it, counted from the minute it stamped, and each window still open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Allowance {
+    pub age: u64,
+    pub five: Option<Window>,
+    pub week: Option<Window>,
+}
+
+impl Allowance {
+    /// `@panestate_rl` as scripts/agent-context writes it,
+    /// `<minute>_<used 5h>_<reset 5h>_<used 7d>_<reset 7d>` in epoch seconds, read at `now`.
+    /// `-_-` is the one spelling of a window the payload lacked. Any other window not of
+    /// that shape (a share over 100, a number not plain digits) makes the whole value
+    /// `None`. A window whose reset is past, or more than [`RESET_MAX`] away, is left out,
+    /// and a value with no window left is `None`.
+    pub fn parse(s: &str, now: u64) -> Option<Self> {
+        let num = |x: &str| if agents::all_digits(x) { x.parse::<u64>().ok() } else { None };
+        // Some(None): no such window, or none open now; None: not the shim's shape
+        let window = |u: &str, r: &str| {
+            if (u, r) == ("-", "-") {
+                return Some(None);
+            }
+            let used = u8::try_from(num(u)?).ok().filter(|&n| n <= 100)?;
+            let left = num(r)?.saturating_sub(now);
+            Some((1..=RESET_MAX).contains(&left).then_some(Window { used, left }))
+        };
+        let f: Vec<&str> = s.split('_').collect();
+        let [at, u5, r5, u7, r7] = f[..] else { return None };
+        let a = Allowance {
+            age: now.saturating_sub(num(at)?),
+            five: window(u5, r5)?,
+            week: window(u7, r7)?,
+        };
+        (a.five.is_some() || a.week.is_some()).then_some(a)
+    }
+}
+
+/// Skips the three ages and the whole allowance (#1600), whose countdown and age change every
+/// tick: they would defeat the redraw gate, and `board::gate_extra` takes the allowance as
+/// printed. Destructured so a new field fails to compile until it is placed.
 impl Hash for Pane {
     fn hash<H: Hasher>(&self, h: &mut H) {
         let Pane {
@@ -296,6 +351,7 @@ impl Hash for Pane {
             model,
             ctx,
             role,
+            allow: _,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win, job, topic,
@@ -980,6 +1036,9 @@ const FIELDS: &str = concat!(
     // name only shows, as on the tabs and borders. `cockpit-tui pane` reads -p. Last, so
     // no reader of 14 to 19 moves.
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_role}}}}",
+    // #1600: 21 the allowance scripts/agent-context writes from the status line. Last, so no
+    // reader of 14 to 20 moves.
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_rl}}}}",
 );
 
 /// How many fields FIELDS has: tmux prints every one, so a row with fewer is no row of this
@@ -1145,6 +1204,7 @@ fn row_pane(f: &[&str], procs_t: &mut Option<Procs>, want_ended: bool) -> RowPan
         // a pane title, so untrusted: control and bidi characters go
         job: crate::pick::clean(f[16]).trim().to_string(),
         role: role_of(f),
+        allow: Allowance::parse(f[21], sessions::now()),
         ..Default::default()
     };
     let by = if by_cmd {

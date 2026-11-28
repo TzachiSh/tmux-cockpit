@@ -1168,6 +1168,29 @@ fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
     assert_ne!(extra(&a, &pvs), extra(&a, &moved));
 }
 
+/// #1600: the allowance's countdown changes at every fetch, so the rows' hash skips it and
+/// the gate takes it as printed: a minute less redraws, a second inside the same printed
+/// minute does not.
+#[test]
+fn the_gate_redraws_when_the_printed_countdown_moves() {
+    use cockpit_tui::data::{Allowance, Window, hash_rows};
+    let with = |left: u64| {
+        let mut ps = fixture();
+        ps[0].allow = Some(Allowance {
+            age: 30,
+            five: Some(Window { used: 42, left }),
+            week: None,
+        });
+        ps
+    };
+    let (a, sooner, minute) = (with(7830), with(7829), with(7770));
+    let pvs = previews();
+    let extra = board::gate_extra;
+    assert_eq!(hash_rows(&a, ""), hash_rows(&minute, ""), "the countdown is not in the rows' hash");
+    assert_ne!(extra(&a, &pvs), extra(&minute, &pvs), "2h10m -> 2h09m is visible");
+    assert_eq!(extra(&a, &pvs), extra(&sooner, &pvs), "2h10m30s and 2h10m29s both print 2h10m");
+}
+
 /// Every SGR parameter crossterm emitted, in order.
 fn sgr_params(bytes: &[u8]) -> Vec<u16> {
     let s = String::from_utf8_lossy(bytes).into_owned();
