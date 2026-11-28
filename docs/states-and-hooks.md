@@ -738,10 +738,11 @@ separator, so a directory ending in `;` is passed as `\;`.
 ## Messages between sessions
 
 `cockpit-tui msg send` passes a message from one agent session to another, and no shared record
-holds its words (#1575, epic #1573). A session id here is the UUID in `@cockpit_session` with its
-dashes dropped, in lower case: 32 hex digits, as every contract id is written. The command runs in
-a pane of a tmux server: `$TMUX` must be set and `$TMUX_PANE` must be a pane id, `%N`. The read
-side, `cockpit-tui msg read`, comes in the next part of #1575.
+holds its words (#1575, epic #1573). A session id here is the UUID in `@cockpit_session`, in the
+one form the hooks save (lower case, `board::is_session_id`, #1589), with its dashes dropped: 32
+hex digits, as every contract id is written. A pane whose value has another form publishes no
+session. The command runs in a pane of a tmux server: `$TMUX` must be set and `$TMUX_PANE` must
+be a pane id, `%N`. The read side, `cockpit-tui msg read`, comes in the next part of #1575.
 
 `cockpit-tui msg send --session <id> <to> <summary-file> <body-file>` sends from the pane
 `$TMUX_PANE` names, and `<id>` must be the session that pane publishes. `<to>` must be a session
@@ -749,10 +750,11 @@ that a pane of the same server publishes. The summary is one line of UTF-8, a fi
 allowed, not empty, at most 200 bytes, with no tab, control or bidi character. The summary and the
 body must be regular files. The send prints the new `msg_id` once the message is stored.
 
-Exit 0 is done. A refusal exits 1 with one line on stderr, `cockpit-tui: msg: <reason>`. When
-tmux fails, that line says tmux failed, never that no session is there. A usage error exits 2. A
-send that cannot print its `msg_id` exits 1 too, and its line names the `msg_id` of the message
-it stored.
+Exit 0 is done. A refusal exits 1 with one line on stderr, `cockpit-tui: msg: <reason>`. The line
+names neither the `--session` nor the `<to>` given, and a path in it has its control and bidi
+characters dropped. When tmux fails, that line says tmux failed, never that no session is there.
+A usage error exits 2. A send that cannot print its `msg_id` exits 1 too, and its line names the
+`msg_id` of the message it stored.
 
 The store is `tmux-cockpit` in the state folder: `$XDG_STATE_HOME/tmux-cockpit`, else
 `$HOME/.local/state/tmux-cockpit`. As in `store::xdg_dir` (#1508), a relative value is ignored,

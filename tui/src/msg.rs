@@ -122,7 +122,7 @@ fn caller(w: &dyn World, given: &str) -> Result<String, String> {
     let answer = w.tmux(&["display-message", "-p", "-t", &pane, PANE_FMT]);
     let me = session_of(&pane, answer.as_deref())?;
     if given != me {
-        return Err(format!("session {given} is not the session of pane {pane}"));
+        return Err(format!("--session is not the session of pane {pane}"));
     }
     Ok(me)
 }
@@ -147,13 +147,10 @@ fn session_of(pane: &str, answer: Option<&str>) -> Result<String, String> {
     sid_hex(value).ok_or_else(|| format!("pane {pane} publishes no session in @cockpit_session"))
 }
 
-/// A session id as every contract id is written: the UUID with its dashes dropped, in lower
-/// case. `None` for a value that is no UUID.
-fn sid_hex(uuid: &str) -> Option<String> {
-    let groups: Vec<&str> = uuid.split('-').collect();
-    let shape = groups.iter().map(|g| g.len()).eq([8_usize, 4, 4, 4, 12]);
-    let hex = groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()));
-    (shape && hex).then(|| groups.concat().to_ascii_lowercase())
+/// A session id as every contract id is written: the one form the hooks save
+/// ([`crate::board::is_session_id`], #1589), its dashes dropped. `None` for any other value.
+fn sid_hex(id: &str) -> Option<String> {
+    crate::board::is_session_id(id).then(|| id.replace('-', ""))
 }
 
 /// Whether a pane of `list`, one `@cockpit_session` a line, publishes `to`.
@@ -174,7 +171,7 @@ fn send(w: &dyn World, me: &str, to: &str, summary: &Path, body: &Path) -> Resul
     let list = w.tmux(&["list-panes", "-a", "-F", "#{@cockpit_session}"]);
     let list = list.ok_or_else(|| "cannot list the panes of this tmux server: tmux failed".to_string())?;
     if !publishes(&list, to) {
-        return Err(format!("no pane of this tmux server publishes session {to}"));
+        return Err("no pane of this tmux server publishes the session given as <to>".into());
     }
     let line = summary_line(&read_given(summary, "summary", SUMMARY_READ)?)?;
     let body = read_given(body, "body", u64::MAX)?;
@@ -198,14 +195,14 @@ fn send(w: &dyn World, me: &str, to: &str, summary: &Path, body: &Path) -> Resul
 /// A file the caller names, at most `cap` bytes of it. A link is followed: the file is the
 /// caller's own. O_NONBLOCK opens a FIFO at once, and it is refused as no regular file.
 fn read_given(path: &Path, what: &str, cap: u64) -> Result<Vec<u8>, String> {
-    let at = |e: io::Error| format!("cannot read the {what} file {}: {e}", path.display());
+    let at = |e: io::Error| format!("cannot read the {what} file {}: {e}", shown(path));
     let f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
         .open(path)
         .map_err(at)?;
     if !f.metadata().map_err(at)?.is_file() {
-        return Err(format!("the {what} file {} is not a regular file", path.display()));
+        return Err(format!("the {what} file {} is not a regular file", shown(path)));
     }
     let mut b = Vec::new();
     f.take(cap).read_to_end(&mut b).map_err(at)?;
@@ -255,11 +252,13 @@ fn envelope(id: &str, from: &str, to: &str, ts: &str) -> String {
 /// place. A refusal takes back the files this call linked, and only those.
 fn store(root: &Path, to: &str, id: &str, [txt, md, json]: [&[u8]; 3]) -> Result<(), String> {
     let made = DirBuilder::new().recursive(true).mode(0o700).create(root);
-    made.map_err(|e| format!("cannot make {}: {e}", root.display()))?;
+    made.map_err(|e| format!("cannot make {}: {e}", shown(root)))?;
     let (refs, msg) = (root.join("refs"), root.join("msg"));
     let inbox = msg.join(to);
+    // SAFETY: geteuid takes no argument and cannot fail.
+    let me = unsafe { libc::geteuid() };
     for dir in [&refs, &msg, &inbox] {
-        own_dir(dir)?;
+        own_dir(dir, me)?;
     }
     let files = [
         (&refs, format!("{id}.txt"), txt),
@@ -285,31 +284,35 @@ fn store(root: &Path, to: &str, id: &str, [txt, md, json]: [&[u8]; 3]) -> Result
 /// the name is taken.
 fn put(dir: &Path, name: &str, bytes: &[u8]) -> Result<bool, String> {
     let tmp = dir.join(format!(".{name}.{}.new", std::process::id()));
-    create_file(dir, &tmp, &dir.join(name), bytes).map_err(|(p, e)| format!("cannot write {}: {e}", p.display()))
+    create_file(dir, &tmp, &dir.join(name), bytes).map_err(|(p, e)| format!("cannot write {}: {e}", shown(&p)))
 }
 
 /// `why`, once each of `linked` is removed; a file that stays is named in the line.
 fn take_back(why: String, linked: &[PathBuf]) -> String {
     linked.iter().fold(why, |why, p| match std::fs::remove_file(p) {
         Ok(()) => why,
-        Err(e) => format!("{why}; {} stays: {e}", p.display()),
+        Err(e) => format!("{why}; {} stays: {e}", shown(p)),
     })
 }
 
-/// A folder of the store, made 0700 when missing. One already there must be a folder of this
-/// user, not a link, with no group or other bits.
-fn own_dir(dir: &Path) -> Result<(), String> {
+/// A path as a refusal line shows it: [`crate::pick::clean`] drops a newline, a control or a
+/// bidi character, so the line stays one line.
+fn shown(p: &Path) -> String {
+    crate::pick::clean(&p.display().to_string())
+}
+
+/// A folder of the store, made 0700 when missing. One already there must be a folder of user
+/// `me`, not a link, with no group or other bits.
+fn own_dir(dir: &Path, me: u32) -> Result<(), String> {
     match DirBuilder::new().mode(0o700).create(dir) {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => {
-            return Err(format!("cannot make {}: {e}", dir.display()));
+            return Err(format!("cannot make {}: {e}", shown(dir)));
         }
         _ => {}
     }
-    let m = std::fs::symlink_metadata(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
-    // SAFETY: geteuid takes no argument and cannot fail.
-    let me = unsafe { libc::geteuid() };
+    let m = std::fs::symlink_metadata(dir).map_err(|e| format!("cannot read {}: {e}", shown(dir)))?;
     match flaw(m.file_type().is_symlink(), m.is_dir(), m.uid(), m.mode(), me) {
-        Some(why) => Err(format!("{} is not a private folder: it {why}", dir.display())),
+        Some(why) => Err(format!("{} is not a private folder: it {why}", shown(dir))),
         None => Ok(()),
     }
 }
@@ -338,7 +341,7 @@ mod tests {
     use std::time::Duration;
 
     /// Pane %1 publishes A, pane %2 publishes B.
-    const UA: &str = "3F2A9C0D-1E4B-4A67-8C9D-0E1F2A3B4C5D";
+    const UA: &str = "3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5d";
     const HA: &str = "3f2a9c0d1e4b4a678c9d0e1f2a3b4c5d";
     const UB: &str = "7a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9";
     const HB: &str = "7a1b2c3d4e5f4061827394a5b6c7d8e9";
@@ -547,13 +550,15 @@ mod tests {
     }
 
     #[test]
-    fn sid_hex_drops_the_dashes_of_a_uuid_in_lower_case() {
+    fn sid_hex_drops_the_dashes_of_the_one_form_the_hooks_save() {
         assert_eq!(sid_hex(UA).as_deref(), Some(HA));
         assert_eq!(sid_hex(UB).as_deref(), Some(HB));
         for bad in [
             "",
             "not-a-uuid",
             HA,
+            "3F2A9C0D-1E4B-4A67-8C9D-0E1F2A3B4C5D",
+            "3f2a9c0d-1e4b-4a67-8c9d-0e1f2a3b4c5D",
             "3F2A9C0D-1E4B-4A67-8C9D",
             "3F2A9C0D-1E4B-4A67-8C9D-0E1F2A3B4C5D-00",
             "3F2A9C0D1-E4B-4A67-8C9D-0E1F2A3B4C5D",
@@ -589,8 +594,9 @@ mod tests {
         let w = world(&t);
         assert_eq!(caller(&w, HA), Ok(HA.to_string()));
         assert_eq!(*w.calls.borrow(), ["display-message -p -t %1 #{pane_id}\u{1f}#{@cockpit_session}"]);
-        let other = Err(format!("session {HB} is not the session of pane %1"));
+        let other = Err("--session is not the session of pane %1".to_string());
         assert_eq!(caller(&w, HB), other);
+        assert_eq!(caller(&w, "x\ny"), other, "no id the caller gave is echoed");
         let mut w = world(&t);
         w.vars.remove(0);
         assert_eq!(
@@ -606,6 +612,10 @@ mod tests {
         assert!(publishes(&list, HA));
         assert!(!publishes(&list, HB), "a bare hex id is no UUID");
         assert!(publishes(&format!("{UB}\n"), HB));
+        assert!(
+            !publishes(&UB.to_uppercase(), HB),
+            "an upper-case UUID is not the form the hooks save"
+        );
         assert!(!publishes("", HA));
     }
 
@@ -686,7 +696,8 @@ mod tests {
             t.join("no").display(),
             os_error(libc::ENOENT)
         );
-        assert_eq!(read_given(&t.join("no"), "summary", 9), Err(missing));
+        assert_eq!(read_given(&t.join("no"), "summary", 9), Err(missing.clone()));
+        assert_eq!(read_given(&t.join("n\no"), "summary", 9), Err(missing), "a newline is dropped");
         let dir = Err(format!("the body file {} is not a regular file", t.display()));
         assert_eq!(read_given(&t, "body", 9), dir);
         let fifo = t.join("fifo");
@@ -713,26 +724,32 @@ mod tests {
     fn own_dir_refuses_a_link_a_file_and_a_folder_others_can_enter() {
         let t = Tmp::new("ownno");
         let (link, f, wide) = (t.join("link"), t.join("f"), t.join("wide"));
-        own_dir(&t.join("real")).unwrap();
+        let me = std::fs::metadata(&*t).unwrap().uid();
+        own_dir(&t.join("real"), me).unwrap();
+        let real = Err(format!(
+            "{} is not a private folder: it belongs to uid {me}",
+            t.join("real").display()
+        ));
+        assert_eq!(own_dir(&t.join("real"), me + 1), real);
         symlink(t.join("real"), &link).unwrap();
         assert_eq!(
-            own_dir(&link),
+            own_dir(&link, me),
             Err(format!("{} is not a private folder: it is a symbolic link", link.display()))
         );
         std::fs::write(&f, "").unwrap();
         assert_eq!(
-            own_dir(&f),
+            own_dir(&f, me),
             Err(format!("{} is not a private folder: it is not a folder", f.display()))
         );
         std::fs::create_dir(&wide).unwrap();
         std::fs::set_permissions(&wide, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
-            own_dir(&wide),
+            own_dir(&wide, me),
             Err(format!("{} is not a private folder: it has mode 755", wide.display()))
         );
         let under = f.join("x");
         assert_eq!(
-            own_dir(&under),
+            own_dir(&under, me),
             Err(format!("cannot make {}: {}", under.display(), os_error(libc::ENOTDIR)))
         );
     }
@@ -857,10 +874,12 @@ mod tests {
         );
         let mut w = world(&t);
         w.list = Some(format!("{UA}\n"));
-        assert_eq!(
-            send_ab(&w, &t, "hi\n", "b\n").0,
-            no(&format!("no pane of this tmux server publishes session {HB}"))
-        );
+        let unknown = no("no pane of this tmux server publishes the session given as <to>");
+        assert_eq!(send_ab(&w, &t, "hi\n", "b\n").0, unknown);
+        let (s, b) = (t.join("sum").display().to_string(), t.join("body").display().to_string());
+        assert_eq!(go(&w, &["send", "--session", HA, "x\ny", &s, &b]).0, unknown, "<to> is not echoed");
+        let over = no("the summary is over 200 bytes");
+        assert_eq!(send_ab(&world(&t), &t, &"y".repeat(201), "b\n").0, over, "the read takes 202 bytes");
         let mut w = world(&t);
         w.random = None;
         assert_eq!(send_ab(&w, &t, "hi\n", "b\n").0, no("cannot read 16 random bytes: no entropy"));
