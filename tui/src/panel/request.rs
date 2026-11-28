@@ -40,11 +40,16 @@ impl std::fmt::Display for Fail {
 pub struct Call {
     pub claude: String,
     pub timeout: Duration,
-    /// The child's cwd, and the parent of the system prompt files.
-    pub dir: PathBuf,
+    /// The child's cwd, and the parent of the system prompt files; `None` with no cache
+    /// folder ([`crate::store::xdg_dir`]), where a call is refused (#1597).
+    pub dir: Option<PathBuf>,
     /// `--effort`, from `COCKPIT_PANEL_EFFORT` (#623).
     pub effort: Effort,
 }
+
+/// Why a call with no cache folder is refused: it has nowhere to start or to write its
+/// system prompt (#1597).
+const NO_CALL_DIR: &str = "no folder for the panel's calls: HOME and XDG_CACHE_HOME are unset or relative";
 
 /// `--effort`: one of the CLI's words, so the user's own text never reaches the
 /// argv. The panel passes one on every call, as none of the user's settings
@@ -88,13 +93,15 @@ impl Call {
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|s| *s > 0);
+        let var = |k| std::env::var(k).ok();
+        let cache = crate::store::xdg_dir(var("XDG_CACHE_HOME").as_deref(), var("HOME").as_deref(), ".cache");
         Call {
             claude: std::env::var("COCKPIT_CLAUDE")
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "claude".into()),
             timeout: Duration::from_secs(secs.unwrap_or(120)),
-            dir: super::xdg("XDG_CACHE_HOME", ".cache").join("tmux-cockpit/panel"),
+            dir: cache.map(|c| c.join("tmux-cockpit/panel")),
             effort: Effort::read(&std::env::var("COCKPIT_PANEL_EFFORT").unwrap_or_default()),
         }
     }
@@ -602,14 +609,15 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
         Some(n) => format!("{system}\n\n{n}"),
         None => system.to_string(),
     };
-    let file = prompt_file(&call.dir, &system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
+    let dir = call.dir.as_deref().ok_or(NO_CALL_DIR)?;
+    let file = prompt_file(dir, &system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
     let mut c = Command::new(&call.claude);
     c.arg("-p")
         .args(super::route::model_argv(model))
         .arg("--system-prompt-file")
         .arg(&file)
         .args(p.argv(call.effort))
-        .current_dir(&call.dir)
+        .current_dir(dir)
         // The hooks key off TMUX_PANE: without it this call is no pane's agent.
         .env("COCKPIT_PANEL_CALL", "1")
         .env_remove("CLAUDECODE")

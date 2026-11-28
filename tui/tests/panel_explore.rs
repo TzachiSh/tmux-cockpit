@@ -251,7 +251,7 @@ fn launched_in(d: &Path) {
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
-        dir: d.join("cache"),
+        dir: Some(d.join("cache")),
         effort: Effort::Medium,
     };
     let mut a = app("bash", &repo.display().to_string());
@@ -275,7 +275,7 @@ fn launched_in(d: &Path) {
         .expect("the fake ran");
     let args: Vec<&str> = argv.lines().collect();
     let cwd = std::fs::read_to_string(d.join("cwd")).unwrap_or_default();
-    let want = std::fs::canonicalize(&call.dir).unwrap();
+    let want = std::fs::canonicalize(call.dir.as_deref().unwrap()).unwrap();
     assert_eq!(
         cwd.trim(),
         want.display().to_string(),
@@ -460,7 +460,7 @@ fn faked_in(d: &Path, out: &str, code: i32) -> (Call, String) {
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(30),
-        dir: d.join("cache"),
+        dir: Some(d.join("cache")),
         effort: Effort::Medium,
     };
     (call, repo.display().to_string())

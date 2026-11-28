@@ -200,7 +200,7 @@ fn no_claude_starts_on_a_secret_read_dir() {
     let call = Call {
         claude: claude.display().to_string(),
         timeout: Duration::from_secs(30),
-        dir: d.join("cache"),
+        dir: Some(d.join("cache")),
         effort: Effort::Medium,
     };
     let p = Profile::read_only(PathBuf::from(PLAIN), true, 0.25, Duration::from_secs(30));

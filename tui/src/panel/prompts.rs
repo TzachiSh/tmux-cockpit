@@ -25,9 +25,14 @@ pub struct Ctx {
 }
 
 /// `name` is the file stem: write, write.examples, write.explore, explain or fix. An override
-/// that exists but cannot be read falls back to `shipped`, and the note says why.
+/// that exists but cannot be read falls back to `shipped`, and the note says why. With no
+/// config folder ([`crate::store::xdg_dir`]) there is no override (#1597).
 pub fn load(name: &str, shipped: &str) -> (String, Option<String>) {
-    let p = super::xdg("XDG_CONFIG_HOME", ".config").join(format!("tmux-cockpit/prompts/{name}.txt"));
+    let var = |k| std::env::var(k).ok();
+    let Some(config) = crate::store::xdg_dir(var("XDG_CONFIG_HOME").as_deref(), var("HOME").as_deref(), ".config") else {
+        return (shipped.trim_end_matches('\n').to_string(), None);
+    };
+    let p = config.join(format!("tmux-cockpit/prompts/{name}.txt"));
     let (text, note) = match std::fs::read_to_string(&p) {
         Ok(t) => (t, None),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (shipped.to_string(), None),

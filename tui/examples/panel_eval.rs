@@ -1698,6 +1698,11 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
     if o.check {
         return;
     }
+    // before any call: a run that cannot record its cost does not spend (#1597)
+    let ledger = ledger_path(o).unwrap_or_else(|e| {
+        eprintln!("panel_eval: {e}");
+        std::process::exit(2);
+    });
     if o.show_holdout {
         println!("{SHOW_BANNER}");
     }
@@ -1741,7 +1746,7 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         Some(Ok(())) => Staged(Some(root)),
         None => Staged(None),
     };
-    let env = fingerprint(&version, hermetic, cwds.0.as_deref(), &call.dir, call.effort, |k| {
+    let env = fingerprint(&version, hermetic, cwds.0.as_deref(), call.dir.as_deref(), call.effort, |k| {
         std::env::var_os(k)
     });
     let mut hashes: Vec<u64> = vec![];
@@ -1861,7 +1866,6 @@ fn run(o: &Opts, me: std::io::Result<PathBuf>) {
         let (none, usd) = judge_rows(&mut rows, o, &call.claude, wrapped, log.as_mut());
         (judged_nothing, judge_usd) = (none, Some(usd));
     }
-    let ledger = ledger_path(o);
     let label = o
         .out
         .as_ref()
@@ -2050,7 +2054,10 @@ fn call_in(base: &Call, root: Option<&Path>, ci: usize, run: usize) -> Result<Ca
     };
     let dir = root.join(format!("case{ci}-run{run}"));
     std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok(Call { dir, ..base.clone() })
+    Ok(Call {
+        dir: Some(dir),
+        ..base.clone()
+    })
 }
 
 /// `claude --version`'s first line, or why there is none.
@@ -2126,14 +2133,15 @@ impl std::fmt::Display for Var {
 
 const ENV_VARS: [&str; 4] = ["HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CLAUDE_CONFIG_DIR"];
 
-/// `hermetic` is what the calls get (see [`hand_off`]); `root` where they run.
-/// A plain call loads what the panel's own argv names (#623). `var` reads a
-/// variable as the spawn does, set whatever its bytes (#871).
+/// `hermetic` is what the calls get (see [`hand_off`]); `root` where they run, else
+/// `dir`, which is `None` with no cache folder (#1597). A plain call loads what the
+/// panel's own argv names (#623). `var` reads a variable as the spawn does, set
+/// whatever its bytes (#871).
 fn fingerprint<V: Into<OsString>>(
     claude: &str,
     hermetic: bool,
     root: Option<&Path>,
-    dir: &Path,
+    dir: Option<&Path>,
     effort: Effort,
     var: impl Fn(&str) -> Option<V>,
 ) -> Fingerprint {
@@ -2141,9 +2149,11 @@ fn fingerprint<V: Into<OsString>>(
     let panel = Profile::TEXT.argv(effort);
     let at = panel.iter().position(|a| a == HERMETIC_FLAGS[0]);
     let panel_sources = at.and_then(|i| panel.get(i + 1));
-    let cwd = match root {
-        Some(r) => format!("{}/<case>-<run>", r.display()),
-        None => dir.display().to_string(),
+    let cwd = match (root, dir) {
+        (Some(r), _) => format!("{}/<case>-<run>", r.display()),
+        (None, Some(d)) => d.display().to_string(),
+        // each plain call is refused (#1597)
+        (None, None) => "(no cache folder)".into(),
     };
     // a value the rig has reaches the calls as it is; Request sets the rest
     let call_env = cockpit_tui::panel::request::CALL_ENV
@@ -2364,12 +2374,11 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The panel's config directory, as `panel::xdg` finds it.
-fn config_home() -> PathBuf {
-    match std::env::var("XDG_CONFIG_HOME") {
-        Ok(v) if v.starts_with('/') => PathBuf::from(v),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
-    }
+/// The panel's config folder, by `store::xdg_dir` as `prompts::load` finds it; `None` with
+/// no config folder, where no override is read (#1597).
+fn config_home() -> Option<PathBuf> {
+    let var = |k| std::env::var(k).ok();
+    cockpit_tui::store::xdg_dir(var("XDG_CONFIG_HOME").as_deref(), var("HOME").as_deref(), ".config")
 }
 
 /// One run's row of an `--out` file: what `--compare` reads.
@@ -2692,7 +2701,7 @@ fn routed(router: Option<&(PathBuf, String)>, system: String, files: String) -> 
 fn prompt_from(o: &Opts) -> String {
     match &o.router {
         Some((p, _)) => format!("{} (--router-prompt)", p.display()),
-        None => prompt_source(&config_home()),
+        None => config_home().map_or_else(|| "shipped".into(), |c| prompt_source(&c)),
     }
 }
 
@@ -2741,7 +2750,7 @@ fn purpose_calibrate(file: &Path, o: &Opts) -> Result<(), String> {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or("claude".into());
-    let ledger = ledger_path(o);
+    let ledger = ledger_path(o)?;
     let mut cache = purpose::Cache::open(&ledger.with_file_name("purpose-cache.tsv"));
     let qs: Vec<String> = rows.iter().map(|(q, _)| q.clone()).collect();
     let (verdicts, usd) = purpose::judge_all(&claude, &o.judge_model, &qs, o.jobs, &mut cache);
@@ -2795,7 +2804,7 @@ fn overlap_check(o: &Opts) -> Result<i32, String> {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or("claude".into());
-    let ledger = ledger_path(o);
+    let ledger = ledger_path(o)?;
     if cases.is_empty() && !lines.is_empty() {
         return Err(format!("{} changed lines and no held-out case to check them against", lines.len()));
     }
@@ -2857,19 +2866,19 @@ fn prompt_diff(base: &str) -> Result<String, String> {
 }
 
 /// Where a run's cost goes: `--ledger`, else `cost.tsv` next to `--out`, else
-/// `panel-eval-cost.tsv` in `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit`.
-fn ledger_path(o: &Opts) -> PathBuf {
+/// `tmux-cockpit/panel-eval-cost.tsv` in the state folder of `store::xdg_dir`. With no
+/// state folder either, an error: the run is refused before any call (#1597).
+fn ledger_path(o: &Opts) -> Result<PathBuf, String> {
     if let Some(l) = &o.ledger {
-        return l.clone();
+        return Ok(l.clone());
     }
     if let Some(out) = &o.out {
-        return out.with_file_name("cost.tsv");
+        return Ok(out.with_file_name("cost.tsv"));
     }
-    let state = match std::env::var("XDG_STATE_HOME") {
-        Ok(v) if v.starts_with('/') => PathBuf::from(v),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/state"),
-    };
-    state.join("tmux-cockpit/panel-eval-cost.tsv")
+    let var = |k| std::env::var(k).ok();
+    let state = cockpit_tui::store::xdg_dir(var("XDG_STATE_HOME").as_deref(), var("HOME").as_deref(), ".local/state");
+    let why = "no folder for the cost ledger: HOME and XDG_STATE_HOME are unset or relative; pass --ledger or --out";
+    Ok(state.ok_or(why)?.join("tmux-cockpit/panel-eval-cost.tsv"))
 }
 
 /// One cost ledger line: unix time, the `--out` label, cases, runs, dollars, prompt hash.
@@ -3060,7 +3069,7 @@ mod tests {
 
     /// XDG_CONFIG_HOME at [`fake::NO_HOME`] for the whole binary, set on the first call and
     /// never restored, so a developer's prompt overrides never reach a test (#1088). Absolute,
-    /// so the lookup (`panel::xdg`) never falls back to HOME, and HOME is left as it is: rig
+    /// so the lookup (`store::xdg_dir`) never falls back to HOME, and HOME is left as it is: rig
     /// children inherit it, and a value that changed with test order would reach them. A test
     /// that reads a prompt in this process calls this first.
     fn pinned_config() {
@@ -3614,7 +3623,7 @@ mod tests {
         std::fs::write(&p, "route it").unwrap();
         let want = format!("{} (--router-prompt)", p.display());
         assert_eq!(prompt_from(&router_opts(&p).unwrap()), want);
-        assert_eq!(prompt_from(&opts(args("")).unwrap()), prompt_source(&config_home()));
+        assert_eq!(prompt_from(&opts(args("")).unwrap()), prompt_source(&config_home().unwrap()));
     }
 
     // --- #1387: --pane-cwd-source, its options ---
@@ -3681,14 +3690,13 @@ mod tests {
     #[test]
     fn the_ledger_goes_to_ledger_then_next_to_out_then_the_state_folder() {
         let o = opts(args("--ledger /l/c.tsv --out /o/a.jsonl")).unwrap();
-        assert_eq!(ledger_path(&o), PathBuf::from("/l/c.tsv"));
+        assert_eq!(ledger_path(&o), Ok(PathBuf::from("/l/c.tsv")));
         let o = opts(args("--out /o/a.jsonl")).unwrap();
-        assert_eq!(ledger_path(&o), PathBuf::from("/o/cost.tsv"));
-        let o = opts(args("")).unwrap();
+        assert_eq!(ledger_path(&o), Ok(PathBuf::from("/o/cost.tsv")));
+        let got = ledger_path(&opts(args("")).unwrap());
         assert!(
-            ledger_path(&o).ends_with("tmux-cockpit/panel-eval-cost.tsv"),
-            "{:?}",
-            ledger_path(&o)
+            got.as_ref().is_ok_and(|p| p.ends_with("tmux-cockpit/panel-eval-cost.tsv")),
+            "{got:?}"
         );
     }
 
@@ -5131,7 +5139,7 @@ mod tests {
         Call {
             claude: "claude".into(),
             timeout,
-            dir: dir.into(),
+            dir: Some(dir.into()),
             effort: Effort::Medium,
         }
     }
@@ -5142,11 +5150,11 @@ mod tests {
         let dir = scratch("cwds");
         let root = &dir.0;
         let base = base_call(Path::new("/panel/cache"));
-        let a = call_in(&base, Some(root), 0, 0).unwrap();
-        let b = call_in(&base, Some(root), 0, 1).unwrap();
-        assert_ne!(a.dir, b.dir);
-        assert!(a.dir.starts_with(root) && b.dir.starts_with(root));
-        assert_eq!(std::fs::read_dir(&a.dir).unwrap().count(), 0, "a fresh folder is empty");
+        let a = call_in(&base, Some(root), 0, 0).unwrap().dir.unwrap();
+        let b = call_in(&base, Some(root), 0, 1).unwrap().dir.unwrap();
+        assert_ne!(a, b);
+        assert!(a.starts_with(root) && b.starts_with(root));
+        assert_eq!(std::fs::read_dir(&a).unwrap().count(), 0, "a fresh folder is empty");
         let again = call_in(&base, Some(root), 0, 0).unwrap_err();
         assert!(again.contains("case0-run0"), "never reused: {again}");
         assert_eq!(call_in(&base, None, 0, 0).unwrap().dir, base.dir);
@@ -5225,7 +5233,7 @@ mod tests {
             "2.1.319 (Claude Code)",
             true,
             Some(Path::new("/t/cwd")),
-            Path::new("/c"),
+            Some(Path::new("/c")),
             Effort::Low,
             var,
         );
@@ -5236,8 +5244,9 @@ mod tests {
         assert_eq!((f.hermetic, f.setting_sources.as_deref()), (true, Some("")));
         assert_eq!(f.vars[0], ("HOME", Some("/home/u".into())));
         assert_eq!(f.vars[3], ("CLAUDE_CONFIG_DIR", None));
-        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, var);
+        let plain = fingerprint("v", false, None, Some(Path::new("/c")), Effort::Medium, var);
         assert_eq!((plain.hermetic, plain.cwd.as_str()), (false, "/c"));
+        assert_eq!(fingerprint("v", false, None, None, Effort::Medium, var).cwd, "(no cache folder)");
         assert_eq!(f.json()["vars"]["XDG_CONFIG_HOME"], serde_json::Value::Null);
         // an unset name is in the row as null, not left out of it (#875)
         assert!(f.json()["vars"].as_object().unwrap().contains_key("XDG_CONFIG_HOME"));
@@ -5246,7 +5255,7 @@ mod tests {
     /// #623: the panel's own call loads no setting source, so a plain run does not either.
     #[test]
     fn a_plain_run_loads_the_setting_sources_the_panel_does() {
-        let plain = fingerprint("v", false, None, Path::new("/c"), Effort::Medium, |_: &str| None::<String>);
+        let plain = fingerprint("v", false, None, Some(Path::new("/c")), Effort::Medium, |_: &str| None::<String>);
         assert_eq!(plain.setting_sources.as_deref(), Some(""));
     }
 
@@ -5260,7 +5269,7 @@ mod tests {
             "DISABLE_AUTOUPDATER" => Some(String::new()),
             _ => None,
         };
-        let f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var);
+        let f = fingerprint("v", true, None, Some(Path::new("/c")), Effort::Medium, var);
         let names = ["DISABLE_TELEMETRY", "DISABLE_AUTOUPDATER", "DISABLE_ERROR_REPORTING"];
         let got = names.map(|k| f.json()["vars"][k].clone());
         assert_eq!(got, ["0", "", "1"].map(serde_json::Value::from));
@@ -5270,7 +5279,7 @@ mod tests {
     fn recorded(k: &str, bytes: Option<&[u8]>) -> serde_json::Value {
         use std::os::unix::ffi::OsStringExt;
         let var = |n: &str| bytes.filter(|_| n == k).map(|b| OsString::from_vec(b.to_vec()));
-        fingerprint("v", true, None, Path::new("/c"), Effort::Medium, var).json()["vars"][k].clone()
+        fingerprint("v", true, None, Some(Path::new("/c")), Effort::Medium, var).json()["vars"][k].clone()
     }
 
     /// #871: the spawn passes on a value that is not UTF-8, so the fingerprint
@@ -5335,7 +5344,7 @@ mod tests {
 
     /// The summary's environment line for a fingerprint whose one variable is `v`.
     fn env_line(v: Option<Var>) -> String {
-        let mut f = fingerprint("v", true, None, Path::new("/c"), Effort::Medium, |_: &str| None::<String>);
+        let mut f = fingerprint("v", true, None, Some(Path::new("/c")), Effort::Medium, |_: &str| None::<String>);
         f.vars = vec![("HOME", v)];
         f.to_string()
     }
@@ -5368,7 +5377,7 @@ mod tests {
     /// The effort the calls get, from COCKPIT_PANEL_EFFORT, is in the fingerprint.
     #[test]
     fn the_fingerprint_names_the_effort() {
-        let f = fingerprint("v", true, None, Path::new("/c"), Effort::XHigh, |_: &str| None::<String>);
+        let f = fingerprint("v", true, None, Some(Path::new("/c")), Effort::XHigh, |_: &str| None::<String>);
         assert_eq!(f.json()["effort"], "xhigh");
     }
 
@@ -7689,15 +7698,33 @@ esac
         /// [`rig_run_with`] with `env` added to the child's own environment.
         fn rig_run_env(name: &str, cases: &str, script: &str, extra: &[&str], env: &[(&str, &OsStr)]) -> Ran {
             let d = scratch(name);
+            let p = |f: &str| d.0.join(f).display().to_string();
+            let (rows, ledger) = (p("rows.jsonl"), p("cost.tsv"));
+            let mut c = rig_command(&d, cases, script, &[&["--out", &rows, "--ledger", &ledger][..], extra].concat());
+            c.envs(env.iter().copied());
+            ran(&d, c)
+        }
+
+        /// #1597: [`rig_run_with`] with no `--out` or `--ledger` but those in `extra`, in a
+        /// child with no HOME, `set` in its environment and `cwd` as its folder.
+        fn rig_run_homeless(name: &str, cases: &str, script: &str, extra: &[&str], cwd: &Path, set: &[(&str, &str)]) -> Ran {
+            let d = scratch(name);
+            let mut c = rig_command(&d, cases, script, extra);
+            c.env_remove("HOME").envs(set.iter().copied()).current_dir(cwd);
+            ran(&d, c)
+        }
+
+        /// The child a rig run starts: `cases` and the stand-in claude `script` in `d`, the
+        /// rig's own flags, then `extra`.
+        fn rig_command(d: &judge::Scratch, cases: &str, script: &str, extra: &[&str]) -> std::process::Command {
             // tune and held-out cases in one --cases file: only the held-out
             // file may hold both (#861)
             std::fs::write(d.0.join("holdout-blind.txt"), cases).unwrap();
             let claude = fake(&d.0, script);
             let p = |f: &str| d.0.join(f).display().to_string();
-            let (cases, rows, ledger) = (p("holdout-blind.txt"), p("rows.jsonl"), p("cost.tsv"));
+            let cases = p("holdout-blind.txt");
             let base = ["--cases", &cases, "--no-hermetic", "--runs", "1", "--jobs", "1"];
-            let out = ["--out", &rows, "--ledger", &ledger];
-            let args = [&base[..], &out, extra].concat().join("\n");
+            let args = [&base[..], extra].concat().join("\n");
             let mut c = std::process::Command::new(std::env::current_exe().unwrap());
             c.args(["--exact", "tests::quiet::rig_child", "--nocapture", "--test-threads=1"]);
             for (k, v) in [("CACHE", "cache"), ("CONFIG", "config"), ("STATE", "state")] {
@@ -7711,11 +7738,50 @@ esac
             c.env_remove("CLAUDE_CONFIG_DIR");
             // the route's own model in every row, whatever their shell exports (#957)
             c.env_remove("COCKPIT_PANEL_MODEL");
-            c.envs(env.iter().copied());
+            c
+        }
+
+        /// How the child `c` of a rig in `d` ended, all it wrote, and its `--out` rows.
+        fn ran(d: &judge::Scratch, mut c: std::process::Command) -> Ran {
             let o = c.output().unwrap();
             let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let rows = std::fs::read_to_string(d.0.join("rows.jsonl")).unwrap_or_default();
             (o.status.code(), text(&o.stdout), text(&o.stderr), rows)
+        }
+
+        /// #1597: with no HOME and a relative XDG_STATE_HOME there is no folder for the cost
+        /// ledger, so a run given neither --ledger nor --out is refused before any call, and
+        /// writes nothing in the cwd, where a path made from the unset HOME would put it.
+        #[test]
+        fn with_no_state_folder_a_run_without_a_ledger_is_refused() {
+            let (cwd, log) = (scratch("xp-noledger-cwd"), scratch("xp-noledger-log"));
+            let calls = log.0.join("calls");
+            let script = format!("#!/bin/sh\necho call >> '{}'\ncat >/dev/null\necho ok\n", calls.display());
+            let set = [("XDG_STATE_HOME", "rel")];
+            let (code, out, err, _) = rig_run_homeless("xp-noledger", ONE, &script, &[], &cwd.0, &set);
+            assert_eq!(code, Some(2), "{out}{err}");
+            let want = "panel_eval: no folder for the cost ledger: HOME and XDG_STATE_HOME are unset or \
+                        relative; pass --ledger or --out";
+            assert!(err.contains(want), "{err}");
+            assert!(!calls.exists(), "a refused run called claude");
+            assert_eq!(std::fs::read_dir(&cwd.0).unwrap().count(), 0, "a file was written in the cwd");
+        }
+
+        /// #1597: with no HOME and a relative XDG_CONFIG_HOME there is no config folder, so the
+        /// summary says the shipped prompt went, though a file waits in the cwd where a path
+        /// made from the unset HOME would find it.
+        #[test]
+        fn with_no_config_folder_the_summary_says_the_shipped_prompt() {
+            let (cwd, d) = (scratch("xp-nocfg-cwd"), scratch("xp-nocfg-ledger"));
+            let prompts = cwd.0.join(".config/tmux-cockpit/prompts");
+            std::fs::create_dir_all(&prompts).unwrap();
+            std::fs::write(prompts.join("write.txt"), "planted").unwrap();
+            let ledger = d.0.join("cost.tsv").display().to_string();
+            let set = [("XDG_CONFIG_HOME", "rel")];
+            let (code, out, err, _) = rig_run_homeless("xp-nocfg", ONE, RIG_CLAUDE, &["--ledger", &ledger], &cwd.0, &set);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let line = out.lines().find(|l| l.starts_with("system prompt ")).unwrap_or_default();
+            assert!(line.ends_with(" (shipped)"), "{out}");
         }
 
         /// The row of a rig run's one call, the rig's env with none of the

@@ -1036,6 +1036,22 @@ fn said_by_hand(child: std::process::Child) -> (Option<i32>, String) {
     (out.status.code(), said)
 }
 
+/// Set for a [`passes_homeless`] child alone: the row it names runs its half there.
+#[allow(dead_code)]
+pub const HOMELESS: &str = "COCKPIT_TEST_HOMELESS";
+
+/// `test`, this binary's own, alone in a child started under `held` with no HOME, `set`
+/// in its environment and `cwd` as its folder, where a path made from the unset HOME
+/// would land; it must pass (#1597). Not the row's own name.
+#[allow(dead_code)]
+pub fn passes_homeless(held: &EnvHeld, test: &str, cwd: &Path, set: &[(&str, &str)]) {
+    let mut c = by_hand(test, set);
+    c.env_remove("HOME").env(HOMELESS, "1").current_dir(cwd);
+    let (code, said) = said_by_hand(spawn_held(held, &mut c).unwrap());
+    let passed = format!("test {test} ... ok");
+    assert!(code == Some(0) && said.lines().any(|l| l == passed), "{test}: {code:?}\n{said}");
+}
+
 /// What a plain `tmux` got from this binary's tests, every test but `skip`, started by
 /// hand with no TMUX_TMPDIR, as on a target with no runner key (#1090) or with the
 /// claude guard at 0: one argv per call, from a stub `tmux` first on PATH that exits 1

@@ -74,7 +74,7 @@ impl Rig {
         Call {
             claude: self.dir.join("claude").display().to_string(),
             timeout: Duration::from_secs(timeout),
-            dir: self.dir.join("cache"),
+            dir: Some(self.dir.join("cache")),
             effort: Effort::Medium,
         }
     }
@@ -118,7 +118,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
 
     let argv = rig.read("argv");
     let args: Vec<&str> = argv.lines().collect();
-    let file = rig.call(30).dir.join("prompts");
+    let file = rig.call(30).dir.unwrap().join("prompts");
     assert_eq!(args.len(), 14, "{argv}");
     assert_eq!(args[..4], ["-p", "--model", "sonnet", "--system-prompt-file"]);
     assert!(args[4].starts_with(&file.display().to_string()), "{}", args[4]);
@@ -138,7 +138,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
     );
     assert_eq!(std::fs::read_to_string(args[4]).unwrap(), "SYS");
     assert_eq!(rig.read("stdin"), "hello </x>\n");
-    let cwd = std::fs::canonicalize(rig.call(30).dir).unwrap();
+    let cwd = std::fs::canonicalize(rig.call(30).dir.unwrap()).unwrap();
     assert_eq!(rig.read("cwd").trim(), cwd.display().to_string());
 }
 
@@ -182,7 +182,7 @@ fn a_missing_binary_fails_through_poll() {
     let call = Call {
         claude: "/nonexistent/claude".into(),
         timeout: Duration::from_secs(5),
-        dir: d.to_path_buf(),
+        dir: Some(d.to_path_buf()),
         effort: Effort::Medium,
     };
     let mut req = spawn(&call, "S", "p", "haiku");
@@ -350,7 +350,7 @@ fn the_text_profile_is_todays_argv() {
             "--disable-slash-commands"
         ]
     );
-    let cwd = std::fs::canonicalize(rig.call(30).dir).unwrap();
+    let cwd = std::fs::canonicalize(rig.call(30).dir.unwrap()).unwrap();
     assert_eq!(rig.read("cwd").trim(), cwd.display().to_string());
 }
 
@@ -397,7 +397,7 @@ fn the_read_only_profile_reads_and_never_writes() {
     // review-432's blocker: a cwd in the repo loads its .claude/settings.json,
     // whose hooks, env and apiKeyHelper run in -p. The repo goes in by --add-dir.
     let cwd = rig.read("cwd").trim().to_string();
-    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir).unwrap().display().to_string());
+    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir.unwrap()).unwrap().display().to_string());
     assert_ne!(cwd, std::fs::canonicalize(&repo).unwrap().display().to_string());
 }
 
@@ -532,7 +532,7 @@ fn a_read_only_call_starts_outside_the_repo() {
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     let cwd = rig.read("cwd").trim().to_string();
     assert_ne!(cwd, std::fs::canonicalize(&repo).unwrap().display().to_string(), "never the repo");
-    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir).unwrap().display().to_string());
+    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir.unwrap()).unwrap().display().to_string());
 }
 
 /// Finding 6, the owner's call: every read-only profile denies the secret paths,

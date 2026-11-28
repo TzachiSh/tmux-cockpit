@@ -15,8 +15,6 @@ pub mod request;
 pub mod route;
 pub mod view;
 
-use std::path::PathBuf;
-
 /// How `cockpit-tui panel %N` starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Start {
@@ -63,14 +61,6 @@ pub fn start_args(args: &[String]) -> Result<(String, Start), String> {
         _ => return Err(START_USAGE.into()),
     };
     Ok((pane.clone(), start))
-}
-
-/// XDG says a relative value is to be ignored, so only an absolute one wins.
-pub(crate) fn xdg(var: &str, fallback: &str) -> PathBuf {
-    match std::env::var(var) {
-        Ok(v) if v.starts_with('/') => PathBuf::from(v),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(fallback),
-    }
 }
 
 /// Android under Termux: TERMUX_VERSION is set, or PREFIX is Termux's own tree.

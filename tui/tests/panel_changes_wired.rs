@@ -130,7 +130,7 @@ impl Rig {
             budget,
         };
         let clock = self.clock.clone();
-        Collector::new(gh, self.store(), Box::new(move || clock.load(Ordering::SeqCst)))
+        Collector::new(gh, Some(self.store()), Box::new(move || clock.load(Ordering::SeqCst)))
     }
 
     /// The panel on a pane running `cmd` in the repo, with the rig's collector.
@@ -168,7 +168,7 @@ impl Rig {
         Call {
             claude: bin.display().to_string(),
             timeout: Duration::from_secs(30),
-            dir: self.s.join("cache"),
+            dir: Some(self.s.join("cache")),
             effort: Effort::Medium,
         }
     }

@@ -3223,10 +3223,12 @@ pub struct Saved {
     pub filter: Option<String>,
 }
 
-/// `None` with no usable HOME: a relative path would land in the cwd.
+/// `board.state` in the state folder of [`crate::store::xdg_dir`]; `None` with no state
+/// folder, where the board keeps no state (#1597).
 pub fn state_path() -> Option<std::path::PathBuf> {
-    let p = crate::panel::xdg("XDG_STATE_HOME", ".local/state").join("tmux-cockpit/board.state");
-    p.is_absolute().then_some(p)
+    let var = |k| std::env::var(k).ok();
+    let state = crate::store::xdg_dir(var("XDG_STATE_HOME").as_deref(), var("HOME").as_deref(), ".local/state")?;
+    Some(state.join("tmux-cockpit/board.state"))
 }
 
 pub fn state_text(s: &Saved) -> String {

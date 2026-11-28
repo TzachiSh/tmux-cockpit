@@ -21,7 +21,7 @@ pub struct Looks {
     collector: Arc<Mutex<Collector>>,
     /// The collector's git and gh budgets and [`SLACK`]: a collect's longest time.
     wait: Duration,
-    store: PathBuf,
+    store: Option<PathBuf>,
     cur: Option<Look>,
 }
 
@@ -109,14 +109,14 @@ impl Looks {
     }
 
     /// An answer drew the list: the record [`mark_at`] allows is written,
-    /// once. `None` when nothing was to be written.
+    /// once. `None` when nothing was to be written, or no folder holds it.
     pub fn drawn(&mut self) -> Option<std::io::Result<()>> {
         let l = self.cur.as_mut().filter(|l| l.got.is_some() && !l.done)?;
         l.done = true;
         let (c, at) = l.got.as_ref()?;
         let at = mark_at(c, *at)?;
         let (key, head) = (c.key.as_deref()?, c.head.as_deref()?);
-        Some(mark_seen(&self.store, key, head, at))
+        Some(mark_seen(self.store.as_deref()?, key, head, at))
     }
 }
 

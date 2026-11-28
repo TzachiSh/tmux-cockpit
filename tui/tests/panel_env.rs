@@ -111,7 +111,7 @@ fn the_call_is_no_panes_agent_and_marks_itself() {
     let call = Call::from_env();
     assert_eq!(call.claude, format!("{}/claude", e.dir.display()));
     assert_eq!(call.timeout, Duration::from_secs(7));
-    assert_eq!(call.dir, e.dir.join("cache/tmux-cockpit/panel"));
+    assert_eq!(call.dir, Some(e.dir.join("cache/tmux-cockpit/panel")));
 
     let mut req = Request::spawn(&call, "S", "p", "haiku");
     let mut got = None;
@@ -144,7 +144,7 @@ fn the_call_defaults_without_its_variables() {
     assert_eq!(call.timeout, Duration::from_secs(120), "an unparsable timeout is the default");
     assert_eq!(
         call.dir,
-        e.dir.join(".cache/tmux-cockpit/panel"),
+        Some(e.dir.join(".cache/tmux-cockpit/panel")),
         "a relative XDG_CACHE_HOME is ignored"
     );
 }
@@ -441,7 +441,7 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     let call = Call {
         claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
         timeout: Duration::from_secs(77),
-        dir: e.dir.join("cache"),
+        dir: Some(e.dir.join("cache")),
         effort: Effort::Medium,
     };
     let mut a = App::new("%3", Capture::default());
@@ -1088,7 +1088,7 @@ fn config_dir_refusal(tag: &str, dir: &[u8]) -> String {
     let call = Call {
         claude: e.dir.join("no-claude").display().to_string(),
         timeout: Duration::from_secs(30),
-        dir: e.dir.join("cache"),
+        dir: Some(e.dir.join("cache")),
         effort: Effort::Medium,
     };
     let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, Duration::from_secs(300));
@@ -1211,4 +1211,99 @@ fn started_bare_no_test_reaches_a_plain_tmux() {
     let _l = fake::env_lock();
     let calls = fake::unchecked_tmux_calls("started_bare_no_test_reaches_a_plain_tmux");
     assert_eq!(calls, Vec::<String>::new());
+}
+
+// --- #1597: with no HOME and a relative XDG variable there is no XDG base folder ---
+
+/// The board keeps no board.state: none is read and none written. This was the board's
+/// behaviour before, through its own absolute-path check; now it is store::xdg_dir's.
+#[test]
+fn with_no_state_folder_the_board_keeps_no_state() {
+    let _e = Env::new("nostate", &[("HOME", None), ("XDG_STATE_HOME", Some("rel".into()))]);
+    assert_eq!(cockpit_tui::board::state_path(), None);
+}
+
+/// The child half of the row below: no config folder, so no override is read.
+#[test]
+fn no_config_folder_child() {
+    if std::env::var_os(fake::HOMELESS).is_some() {
+        assert_eq!(prompts::load("write", "shipped"), ("shipped".to_string(), None));
+    }
+}
+
+/// With no config folder the shipped prompt goes, though a file waits in the cwd where a
+/// path made from the unset HOME would find it.
+#[test]
+fn with_no_config_folder_the_shipped_prompt_goes() {
+    let e = Env::new("nocfg", &[]);
+    let d = e.dir.join(".config/tmux-cockpit/prompts");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("write.txt"), "planted").unwrap();
+    fake::passes_homeless(&e.held, "no_config_folder_child", &e.dir, &[("XDG_CONFIG_HOME", "rel")]);
+}
+
+/// The child half of the row below: no cache folder, so the call is refused.
+#[test]
+fn no_call_folder_child() {
+    if std::env::var_os(fake::HOMELESS).is_some() {
+        let mut req = Request::spawn(&Call::from_env(), "S", "p", "haiku");
+        let mut got = None;
+        assert!(until(|| {
+            got = req.poll();
+            got.is_some()
+        }));
+        let want = "no folder for the panel's calls: HOME and XDG_CACHE_HOME are unset or relative";
+        assert_eq!(got, Some(Err(Fail::Failed(want.into()))));
+    }
+}
+
+/// With no cache folder a call has no folder to start in or to write its system prompt
+/// to, so it is refused, and nothing is written in the cwd.
+#[test]
+fn with_no_cache_folder_a_call_is_refused_and_writes_nothing() {
+    let e = Env::new("nocall", &[("COCKPIT_CLAUDE", Some("$D/claude".into()))]);
+    e.exec("claude", "echo ok");
+    let cwd = e.dir.join("cwd");
+    std::fs::create_dir(&cwd).unwrap();
+    fake::passes_homeless(&e.held, "no_call_folder_child", &cwd, &[("XDG_CACHE_HOME", "rel")]);
+    assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0, "a file was written in the cwd");
+}
+
+/// The child half of the row below: no cache folder, so nothing is seen and the mark
+/// goes nowhere. Its cwd is the repo.
+#[test]
+fn no_seen_folder_child() {
+    if std::env::var_os(fake::HOMELESS).is_some() {
+        let repo = std::env::current_dir().unwrap().display().to_string();
+        let mut c = cockpit_tui::panel::changes::Collector::from_env();
+        c.git_budget = BUDGET;
+        let mut l = cockpit_tui::panel::look::Looks::new(c);
+        l.ahead(&repo);
+        assert!(until(|| {
+            l.poll();
+            l.shown().is_some()
+        }));
+        let head = l.shown().map(|(h, _)| h);
+        assert_eq!(head.as_deref(), Some("first look here: the newest commits"));
+        assert!(l.drawn().is_none(), "a mark was written");
+    }
+}
+
+/// With no cache folder an Explain's list is a first look and no mark is written, though
+/// one waits in the repo, the cwd, where a path made from the unset HOME would find it.
+#[test]
+fn with_no_cache_folder_nothing_is_seen_and_no_mark_is_written() {
+    use cockpit_tui::panel::changes::{mark_seen, repo_key};
+    let e = Env::new("noseen", &[]);
+    let repo = e.dir.join("r");
+    std::fs::create_dir(&repo).unwrap();
+    setup_git(&repo, &["init", "-q", "-b", "main"]);
+    setup_git(&repo, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    let store = repo.join(".cache/tmux-cockpit/panel/seen");
+    let key = repo_key(repo.to_str().unwrap());
+    mark_seen(&store, &key, &"a".repeat(40), 1).unwrap();
+    let mark = std::fs::read(store.join(&key)).unwrap();
+    fake::passes_homeless(&e.held, "no_seen_folder_child", &repo, &[("XDG_CACHE_HOME", "rel")]);
+    assert_eq!(std::fs::read_dir(&store).unwrap().count(), 1, "another file in the seen folder");
+    assert_eq!(std::fs::read(store.join(&key)).unwrap(), mark, "the mark was replaced");
 }
