@@ -2714,8 +2714,8 @@ is left out, and a value with no window left is `None`. The tile's bottom border
 it before the model and the context, ` 5h 58% 2h10m · 7d 82% 3d · opus · 84k `: what
 is left of each window and the time to its reset. A reading 5 minutes old or more adds
 its age, ` · 12m ago`, counted from the minute the shim stamped, so it can read up to a
-minute high. The rows' hash skips the countdown and the age, and the redraw gate takes
-them as printed, so they move on screen while the fleet is quiet. `--json` and
+minute high. The rows' hash skips the whole allowance, and the redraw gate takes it as
+printed, so the countdown moves on screen while the fleet is quiet. `--json` and
 `--rows` do not carry it.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
