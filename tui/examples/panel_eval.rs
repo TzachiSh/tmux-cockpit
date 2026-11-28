@@ -49,7 +49,9 @@
 //! user's question, sent as Explain sends it, and its reply is read by Explain's
 //! parser. `--judge` and `--router-prompt` refuse a run that holds one. The
 //! Explain cases are evals/explain/holdout-blind.txt, all held out, which a run
-//! reads with `--cases`.
+//! reads with `--cases`. An Explain case's `--- changes` section is the
+//! what-changed list its App carries (#1613), and its row says whether the answer
+//! cites only that list.
 //!
 //! Each call is hermetic by default (#598): `claude --setting-sources ""`, so
 //! no user, project or local settings load, and with them no CLAUDE.md, no
@@ -64,8 +66,10 @@ use cockpit_tui::data::workdir::{Source, WorkDir};
 use cockpit_tui::highlight;
 use cockpit_tui::panel::app::{App, InputKind, View};
 use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::changes::{Changes, Collector, Gh, Item, Kind, cited};
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn};
 use cockpit_tui::panel::flow;
+use cockpit_tui::panel::look::Looks;
 use cockpit_tui::panel::parse::{self, Reply, files_read, tool_calls};
 use cockpit_tui::panel::prompts::{self, fnv};
 use cockpit_tui::panel::request::{Call, Effort, Fail, Profile, Request};
@@ -161,6 +165,9 @@ struct Case {
     agent_prompt: Option<bool>,
     /// `--- agent`: the board's facts on an Explain case's Claude Code agent.
     agent: Option<cockpit_tui::data::AgentFacts>,
+    /// `--- changes` (#1613): the what-changed list an Explain case's App carries,
+    /// as if the collector had landed it.
+    changes: Option<Vec<Item>>,
 }
 
 /// One `--- refs` line: a path from the pane's folder, and its lines.
@@ -307,6 +314,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             lead: vec![],
             agent_prompt: None,
             agent: None,
+            changes: None,
         };
         let mut expect = None;
         let mut seen: Vec<String> = vec![];
@@ -439,6 +447,11 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
                     let rule = "agent is state, model, doing and asked lines";
                     c.agent = Some(agent_facts(&text).map_err(|m| say(at, rule, m))?)
                 }
+                "changes" => {
+                    dup(c.changes.is_some())?;
+                    let rule = "changes are sha, PR #N, issue #N or CI run N lines with a title";
+                    c.changes = Some(change_items(&text).map_err(|m| say(at, rule, m))?)
+                }
                 x => return Err(say(at, "unknown section", format!("unknown section {x}"))),
             }
         }
@@ -471,6 +484,7 @@ fn parse_some(text: &str, quiet: bool) -> Result<Vec<Case>, String> {
             ("lead", given("lead")),
             ("agent_prompt", given("agent_prompt")),
             ("agent", c.agent.is_some()),
+            ("changes", c.changes.is_some()),
         ];
         let (other, only) = match c.flow {
             CaseFlow::Explain => ("write", &write_only[..]),
@@ -730,6 +744,30 @@ fn agent_facts(text: &str) -> Result<cockpit_tui::data::AgentFacts, String> {
     Ok(f)
 }
 
+/// `--- changes` lines (#1613), one item each as [`Changes::lines`] draws it: a
+/// commit's 12-digit sha, `PR #N`, `issue #N` or `CI run N`, then its title, each
+/// cited as the collector's own items must be ([`cited`]). No line is a list that
+/// landed with nothing in it.
+fn change_items(text: &str) -> Result<Vec<Item>, String> {
+    let kinds = [("PR ", Kind::Pr), ("issue ", Kind::Issue), ("CI run ", Kind::Ci)];
+    let mut out = vec![];
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let bad = || format!("a changes line is a 12-digit sha, PR #N, issue #N or CI run N, then a title (got {line})");
+        let pick = kinds.iter().find_map(|(w, k)| Some((*k, line.strip_prefix(w)?)));
+        let (kind, rest) = pick.unwrap_or((Kind::Commit, line));
+        let (cite, title) = rest.split_once(' ').ok_or_else(bad)?;
+        if title.trim().is_empty() || !cited(kind, cite) {
+            return Err(bad());
+        }
+        out.push(Item {
+            kind,
+            cite: cite.into(),
+            text: title.trim().into(),
+        });
+    }
+    Ok(out)
+}
+
 /// The comments that head the next case trail the last body: a `#` block that a
 /// blank line sets off. A `#` line right after text is the body's own (`#412`, a
 /// root prompt), and so is a body of `#` lines only.
@@ -975,6 +1013,9 @@ struct Grade {
     ready_wrong: bool,
     /// For an Explain answer (#1570): whether its flow draws, one of [`MERMAID`].
     mermaid: Option<&'static str>,
+    /// For an Explain answer whose case lists what changed (#1613): whether it
+    /// cites only listed items, one of [`GROUNDING`].
+    grounding: Option<&'static str>,
     pass: bool,
 }
 
@@ -1001,6 +1042,53 @@ fn mermaid_draws(answer: &str) -> &'static str {
     } else {
         "drawn"
     }
+}
+
+/// Whether an Explain answer cites only what its case's list holds (#1613), as its
+/// row and the summary say it.
+const GROUNDING: [&str; 3] = ["none", "grounded", "ungrounded"];
+
+/// Whether `text`, an Explain answer and its `<prompt>`, cites only items of `list`,
+/// one of [`GROUNDING`]: `none` when it cites nothing ([`cites`]). A sha of 7 to 11
+/// digits is a listed commit's when that commit's sha starts with it, a longer one
+/// when it starts with that sha; a `#N` is a listed PR's or issue's alike.
+fn grounding(text: &str, list: &[Item]) -> &'static str {
+    let listed = |t: &str| {
+        list.iter().any(|i| match i.kind {
+            Kind::Commit | Kind::Rewritten => i.cite.starts_with(t) || t.starts_with(i.cite.as_str()),
+            Kind::Pr | Kind::Issue => i.cite == t,
+            Kind::Ci => false,
+        })
+    };
+    let got = cites(text);
+    if got.is_empty() {
+        "none"
+    } else if got.iter().all(|t| listed(t)) {
+        "grounded"
+    } else {
+        "ungrounded"
+    }
+}
+
+/// The shas and `#N`s `text` cites (#1613). A sha is a word of 7 to 40 lowercase hex
+/// digits with a digit and a letter in it, so a number or a word such as "defaced"
+/// is none. A `#N` is `#` and digits with no letter or digit right after.
+fn cites(text: &str) -> Vec<&str> {
+    let hex = |b: u8| b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+    let sha = |w: &&str| {
+        (7..=40).contains(&w.len())
+            && w.bytes().all(hex)
+            && w.bytes().any(|b| b.is_ascii_digit())
+            && w.bytes().any(|b| b.is_ascii_lowercase())
+    };
+    let mut out: Vec<&str> = text.split(|c: char| !c.is_alphanumeric()).filter(sha).collect();
+    for (at, _) in text.match_indices('#') {
+        let end = at + 1 + text[at + 1..].bytes().take_while(u8::is_ascii_digit).count();
+        if end > at + 1 && !text[end..].starts_with(char::is_alphanumeric) {
+            out.push(&text[at..end]);
+        }
+    }
+    out
 }
 
 fn grade(c: &Case, raw: &str) -> Grade {
@@ -1039,6 +1127,8 @@ fn grade(c: &Case, raw: &str) -> Grade {
         g.ready = Some(ready.is_some());
         g.ready_wrong = c.agent_prompt.is_some_and(|want| want != ready.is_some());
         g.mermaid = Some(mermaid_draws(answer));
+        // the answer as shown, its `<prompt>` included, against the case's list only
+        g.grounding = c.changes.as_deref().map(|l| grounding(&text, l));
     }
     g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
     g.forbidden = c.must_not.iter().filter(|m| has_unnegated(&text, m)).cloned().collect();
@@ -1377,7 +1467,7 @@ fn show_case<T>(held: bool, full: impl FnOnce() -> T, blind: impl FnOnce() -> T)
 /// The `--out` fields a held-out case's row keeps (#792): none holds its
 /// phrases. Every other field, one added later included, is null on that row:
 /// the reply holds a passing case's must phrases, and the reads its searches.
-const HELD_FIELDS: [&str; 31] = [
+const HELD_FIELDS: [&str; 32] = [
     "id",
     "expect",
     "run",
@@ -1413,6 +1503,8 @@ const HELD_FIELDS: [&str; 31] = [
     "lead_missing_n",
     // #1570: one of the four words of [`MERMAID`], never the reply's text
     "mermaid",
+    // #1613: one of the three words of [`GROUNDING`], never a sha or #N it cites
+    "grounding",
 ];
 
 /// Why a `--show-holdout` run refuses to start, and the fix.
@@ -1608,6 +1700,10 @@ impl Ended<'_> {
             row["ready_wrong"] = g.map(|g| g.ready_wrong).into();
             row["lead_missing"] = g.map(|g| g.lead_missing.clone()).into();
             row["mermaid"] = g.and_then(|g| g.mermaid).into();
+            // only a case that lists what changed is measured on it: the rest stay as they were (#1613)
+            if c.changes.is_some() {
+                row["grounding"] = g.and_then(|g| g.grounding).into();
+            }
         }
         row
     }
@@ -2206,11 +2302,42 @@ impl std::fmt::Display for Fingerprint {
 }
 
 /// The system prompt, the user prompt, the profile, the prompt hash and the flow
-/// the panel itself sends for case `c` on `path`: for a write an App in Compose and
-/// its ^S, for an Explain (#1405) the question box Explain opens and its Enter, then
-/// the App's own picks. The work folder is `path`, from `source` (#1387): the
-/// envelope marks it not confirmed on an agent's window when `source` is a guess.
+/// the panel itself sends for case `c` on `path`: [`panel_app`]'s call, then the
+/// App's own picks.
 fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, String, Profile, String, Flow) {
+    let a = panel_app(c, path, explore, source);
+    let ((system, prompt, _), hash) = a.request_hashed().expect("the case's key starts a call");
+    let flow = a.run.as_ref().expect("a call runs a flow").flow.clone();
+    let profile = a.profile_for(&flow);
+    (
+        system,
+        prompt,
+        profile,
+        hash.expect("a write's or an Explain's call carries its prompt hash"),
+        flow,
+    )
+}
+
+/// A `--- changes` list as the collector would have landed it (#1613): a first
+/// look, with a repo key and a head only so the panel shows it ([`Looks::shown`]).
+/// Its collector has no store, so no seen mark is written, and starts no collect
+/// while the list is unseen.
+fn landed(items: Vec<Item>) -> Looks {
+    let list = Changes {
+        key: Some("panel-eval".into()),
+        head: Some("panel-eval".into()),
+        items,
+        ..Default::default()
+    };
+    Looks::landed(Collector::new(Gh::from_env(), None, Box::new(|| 0)), list)
+}
+
+/// The App the panel is for case `c` on `path`, with its call started: for a write
+/// the Compose box and its ^S, for an Explain (#1405) the question box Explain opens
+/// and its Enter, any `--- changes` list landed before it (#1613). The work folder
+/// is `path`, from `source` (#1387): the envelope marks it not confirmed on an
+/// agent's window when `source` is a guess.
+fn panel_app(c: &Case, path: &str, explore: bool, source: Source) -> App {
     let cap = Capture {
         name: c.name.clone(),
         cmd: c.cmd.clone(),
@@ -2238,6 +2365,8 @@ fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, S
             }
         }
     }
+    // in by the time Explain heads for it, so its look-ahead starts no collect
+    a.changes = c.changes.clone().map(landed);
     match c.flow {
         CaseFlow::Write => {
             (a.draft, a.cur) = (c.request.clone(), c.request.len());
@@ -2260,16 +2389,7 @@ fn panel_call(c: &Case, path: &str, explore: bool, source: Source) -> (String, S
             a.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         }
     }
-    let ((system, prompt, _), hash) = a.request_hashed().expect("the case's key starts a call");
-    let flow = a.run.as_ref().expect("a call runs a flow").flow.clone();
-    let profile = a.profile_for(&flow);
-    (
-        system,
-        prompt,
-        profile,
-        hash.expect("a write's or an Explain's call carries its prompt hash"),
-        flow,
-    )
+    a
 }
 
 /// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
@@ -3000,15 +3120,16 @@ fn pct_ci(o: Of) -> String {
     }
 }
 
-/// The summary's `mermaid` line (#1570): each [`MERMAID`] word's share of the
-/// Explain answers; `None` for a run with none, whose summary is as before.
-fn mermaid_line(done: &[(usize, u128, Option<Grade>)]) -> Option<String> {
-    let got: Vec<&str> = done.iter().filter_map(|(_, _, g)| g.as_ref()?.mermaid).collect();
+/// A summary line of a measure, `mermaid` (#1570) or `grounding` (#1613): each of
+/// `words`' share of the answers `pick` reads one from; `None` for a run with none,
+/// whose summary is as before.
+fn share_line(done: &[(usize, u128, Option<Grade>)], words: &[&str], pick: fn(&Grade) -> Option<&'static str>) -> Option<String> {
+    let got: Vec<&str> = done.iter().filter_map(|(_, _, g)| pick(g.as_ref()?)).collect();
     if got.is_empty() {
         return None;
     }
     let share = |w: &&str| format!("{w} {}", pct(Of(got.iter().filter(|&g| g == w).count(), got.len())));
-    Some(MERMAID.iter().map(share).collect::<Vec<_>>().join("  "))
+    Some(words.iter().map(share).collect::<Vec<_>>().join("  "))
 }
 
 fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], o: &Opts) {
@@ -3046,8 +3167,11 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("  on target     {}", pct(t.on_target));
     println!("asking          FPR {}  FNR {}", pct(t.fpr), pct(t.fnr));
     println!("facts present   {}", pct(t.facts));
-    if let Some(l) = mermaid_line(done) {
+    if let Some(l) = share_line(done, &MERMAID, |g| g.mermaid) {
         println!("mermaid         {l}");
+    }
+    if let Some(l) = share_line(done, &GROUNDING, |g| g.grounding) {
+        println!("grounding       {l}");
     }
     if t.refused > 0 {
         println!("refused/cut off {}", t.refused);
@@ -4032,6 +4156,15 @@ mod tests {
     /// The `--- agent` lines of [`EXPLAIN`].
     const AGENT_LINES: &str = "state: needs-input\nmodel: zm-model\ndoing: zd-doing\nasked: za-asked\n";
 
+    /// A made-up what-changed list (#1613), an item of each kind as the panel draws it.
+    const CHANGE_LINES: &str = "0a1b2c3d4e5f zt-fix the total\nPR #12 zt-retry the upload\n\
+                                issue #7 zt-crash on save\nCI run 99 zt-tests failed\n";
+
+    /// [`EXPLAIN`] with `lines` as its `--- changes` section.
+    fn with_changes(lines: &str) -> String {
+        EXPLAIN.replace("--- request", &format!("--- changes\n{lines}--- request"))
+    }
+
     #[test]
     fn reads_an_explain_case() {
         pinned_config();
@@ -4101,6 +4234,53 @@ mod tests {
         for state in ["needs-input", "error", "running", "done"] {
             assert!(parse_cases(&agent(&format!("state: {state}\n"))).is_ok(), "{state}");
         }
+    }
+
+    /// #1613: a `--- changes` line is an item as the panel draws it, cited as the
+    /// collector's own are, with a title. The section is for Explain cases, once, and
+    /// an empty one is a list that landed with nothing in it.
+    #[test]
+    fn refuses_a_bad_changes_section_and_one_on_a_write_case() {
+        assert!(parse_cases(&with_changes(CHANGE_LINES)).is_ok());
+        assert!(parse_cases(&with_changes("")).is_ok());
+        let rule = "a changes line is a 12-digit sha, PR #N, issue #N or CI run N, then a title";
+        let bad = [
+            "0a1b2c3 zt-short",
+            "0A1B2C3D4E5F zt-upper",
+            "0a1b2c3d4e5f",
+            "PR #12",
+            "PR #x zt",
+            "PR #012 zt",
+            "pr #12 zt",
+            "issue 7 zt",
+            "CI run 0 zt",
+            "zz-word zt",
+        ];
+        for line in bad {
+            let e = parse_cases(&with_changes(&format!("{line}\n"))).unwrap_err();
+            assert_eq!(e, format!("case xp-menu: {rule} (got {line})"));
+        }
+        let twice = with_changes(CHANGE_LINES).replace("--- request", "--- changes\nPR #3 zt\n--- request");
+        assert_eq!(parse_cases(&twice).unwrap_err(), "case xp-menu: changes given twice");
+        let write = ONE.replace("--- request", "--- changes\nPR #3 zt\n--- request");
+        assert_eq!(parse_cases(&write).unwrap_err(), "case crash: changes is for explain cases");
+    }
+
+    /// #1613: a case's `--- changes` list reaches the App as a collect that landed, a
+    /// first look with no collect started, and the call is the one without it:
+    /// Explain sends nothing of the list yet (#935 W5 adds it).
+    #[test]
+    fn a_changes_section_reaches_the_app_and_changes_nothing_sent() {
+        pinned_config();
+        let listed = &parse_cases(&with_changes(CHANGE_LINES)).unwrap()[0];
+        let a = panel_app(listed, "/r", false, Source::Session);
+        let lines: Vec<String> = CHANGE_LINES.lines().map(String::from).collect();
+        assert_eq!(a.changes_shown(), Some(("first look here: the newest commits".to_string(), lines)));
+        assert!(!a.changes.as_ref().is_some_and(Looks::waiting), "a collect started");
+        let plain = &parse_cases(EXPLAIN).unwrap()[0];
+        assert!(panel_app(plain, "/r", false, Source::Session).changes.is_none());
+        let sent = |c: &Case| panel_call(c, "/r", false, Source::Session);
+        assert_eq!(sent(listed), sent(plain));
     }
 
     /// The rig sends what the panel's own Explain sends: its prompt, the envelope with
@@ -5523,7 +5703,7 @@ mod tests {
 
     /// Each row: a parse error in the second of two made-up held-out cases, as
     /// the line it is on, the rule it breaks, and the text replaced to break it.
-    fn quiet_rows() -> [(usize, &'static str, &'static str, &'static str); 8] {
+    fn quiet_rows() -> [(usize, &'static str, &'static str, &'static str); 9] {
         let req = "--- request\n";
         [
             (16, "not key: value", "kind: bug\n", "kind: bug\nMADE-UP stray line\n"),
@@ -5543,6 +5723,12 @@ mod tests {
                 "refs are path, path:a or path:a-b lines",
                 req,
                 "--- refs\nMADE-UP:x-y\n--- request\n",
+            ),
+            (
+                23,
+                "changes are sha, PR #N, issue #N or CI run N lines with a title",
+                req,
+                "--- changes\nMADE-UP\n--- request\n",
             ),
         ]
     }
@@ -8452,6 +8638,105 @@ esac
             let want = "\nmermaid         none 20% (1/5)  drawn 20% (1/5)  dropped 40% (2/5)  not_drawn 20% (1/5)\n";
             assert!(out.contains(want), "{out}");
             assert_eq!(row_by_id(&rows, "xp-mm3")["mermaid"], json!("not_drawn"), "{rows}");
+        }
+
+        // ------------------------------------------- #1613: whether an answer cites the list
+
+        /// Made-up Explain cases listing [`CHANGE_LINES`], one tune and one held out.
+        fn changed() -> String {
+            let case = |id: &str, held: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\n{held}--- changes\n{CHANGE_LINES}--- request\nwhat changed\n"
+                )
+            };
+            format!("{}{}", case("xp-ch-tune", ""), case("xp-ch-held", "holdout: yes\n"))
+        }
+
+        /// Stand-in answers to a case listing [`CHANGE_LINES`], each with the word its
+        /// row wants. A sha of 7 to 11 digits is the listed one when that starts with
+        /// it, a longer one when it starts with the listed one; a `#N` is a listed PR
+        /// or issue; the `<prompt>` counts; a number, an uppercase or digit-free hex
+        /// word, a run id and a `#` before a letter cite nothing.
+        fn grounding_replies() -> [(&'static str, &'static str); 11] {
+            [
+                ("none", "It waits."),
+                ("none", "Nothing defaced: 1234567 rows, 0A1B2C3, CI run 99, #x and #7a."),
+                ("grounded", "Fixed in `0a1b2c3` by PR #12; see #7."),
+                ("grounded", "0a1b2c3d4e5 and 0a1b2c3d4e5f landed."),
+                ("grounded", "Commit 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b landed."),
+                ("ungrounded", "Fixed in 0a1b2c4."),
+                ("ungrounded", "Commit 0a1b2c3d4e5e6a7b landed."),
+                ("ungrounded", "See #13."),
+                ("ungrounded", "See issue #99 and 0a1b2c3."),
+                ("ungrounded", "CI run 99 is red: #99."),
+                ("ungrounded", "It waits.\n<prompt>Revert 9abcdef0.</prompt>"),
+            ]
+        }
+
+        /// #1613: an Explain row whose case lists what changed says whether its answer
+        /// cites only listed items; an Explain row without a list and a write row have
+        /// no such field, so they stay as they were.
+        #[test]
+        fn an_explain_row_with_changes_says_whether_its_citations_are_listed() {
+            let cases = parse_cases(&changed()).unwrap();
+            for (want, reply) in grounding_replies() {
+                let row = row_of(&ended(&cases, "xp-ch-tune", reply));
+                assert_eq!(row["grounding"], json!(want), "{reply:?}: {row}");
+            }
+            let plain = parse_cases(EXPLAIN_QUIET).unwrap();
+            let row = row_of(&ended(&plain, "xp-tune", "Fixed in 0a1b2c4."));
+            assert_eq!(row.get("grounding"), None, "{row}");
+            let write = parse_cases(ONE).unwrap();
+            let row = row_of(&ended(&write, "crash", "Fixed in 0a1b2c4."));
+            assert_eq!(row.get("grounding"), None, "{row}");
+        }
+
+        /// #1613: a held-out row keeps `grounding`, the tune row's word, which holds no
+        /// case text: every Explain case is held out.
+        #[test]
+        fn a_held_out_explain_row_keeps_grounding() {
+            let cases = parse_cases(&changed()).unwrap();
+            for (_, reply) in grounding_replies() {
+                let tune = row_of(&ended(&cases, "xp-ch-tune", reply));
+                let held = row_of(&ended(&cases, "xp-ch-held", reply));
+                assert!(held["grounding"].is_string(), "{reply:?}: {held}");
+                assert_eq!(held["grounding"], tune["grounding"], "{reply:?}: {held}");
+            }
+        }
+
+        /// A stand-in claude whose Explain answer turns on its request's word.
+        const GROUNDING_CLAUDE: &str = r#"#!/bin/sh
+[ "$1" = --version ] && { echo 9.9.9; exit 0; }
+case "$(cat)" in
+*zg-cite*) printf 'Fixed in 0a1b2c3 by PR #12.\n' ;;
+*zg-made*) printf 'Fixed in 0a1b2c4 by PR #13.\n' ;;
+*) printf 'It waits.\n' ;;
+esac
+"#;
+
+        /// #1613: a run's summary gives each value's share of the answers whose case
+        /// lists what changed; an Explain case with no list is not counted.
+        #[test]
+        fn a_run_summary_counts_each_grounding_value() {
+            let case = |id: &str, word: &str, list: &str| {
+                format!(
+                    "=== {id}\nkind: menu\nwindow: claude · claude · /home/u\nflow: explain\n\
+                     expect: write\nholdout: yes\n{list}--- request\nwhat changed {word}\n"
+                )
+            };
+            let list = format!("--- changes\n{CHANGE_LINES}");
+            let words = ["zg-none", "zg-cite", "zg-made", "zg-made"];
+            let listed: String = words
+                .iter()
+                .enumerate()
+                .map(|(i, w)| case(&format!("xp-gr{i}"), w, &list))
+                .collect();
+            let cases = format!("{listed}{}", case("xp-gr-plain", "zg-cite", ""));
+            let (code, out, err, _) = rig_run_with("xp-grounding", &cases, GROUNDING_CLAUDE, &[]);
+            assert_eq!(code, Some(0), "{out}{err}");
+            let want = "\ngrounding       none 25% (1/4)  grounded 25% (1/4)  ungrounded 50% (2/4)\n";
+            assert!(out.contains(want), "{out}");
         }
     }
 
