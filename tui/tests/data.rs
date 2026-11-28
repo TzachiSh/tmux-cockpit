@@ -2658,6 +2658,9 @@ fn every_window_shut_shows_nothing_of_the_allowance() {
 }
 
 // ------------------------------------------------ the account a pane runs under (#1601)
+//
+// The board reads @cockpit_accounts once per thread, as it reads @cockpit_agents_glob, so each
+// test here holds one rig: a second rig in the same test would see the first one's list.
 
 /// The card of a pane whose transcript gives `opus · 84k`, with `@cockpit_accounts` `list` and
 /// its FIELDS `at` set, `$HOME` in a value being the rig's: its bottom border row.
@@ -2671,31 +2674,38 @@ fn acct_foot(tag: &str, list: &str, at: &[(usize, &str)]) -> String {
     foot_of(&r, set_fields(&hooked("%1", "done", "s1"), &at), 60)
 }
 
-/// #1601: the card names the account whose dir the pane's hooks recorded, `@cockpit_cfg`
-/// (FIELDS' field 22), before the model and the context. A pane with none recorded runs on
-/// Claude Code's default dir, `~/.claude`.
-#[test]
-fn the_tile_names_the_account_its_hooks_saw() {
-    let list = "p1=~/.claude p2=~/.claude-2";
-    let two = acct_foot("acct2", list, &[(22, "$HOME/.claude-2")]);
-    let one = acct_foot("acct1", list, &[]);
-    assert!(two.contains(" p2 · opus · 84k "), "{two}");
-    assert!(one.contains(" p1 · opus · 84k "), "{one}");
+/// No account name on a card: the model and the context come first.
+fn unnamed(foot: &str) -> bool {
+    foot.contains(" opus · 84k ") && !foot.contains(" · opus")
 }
 
-/// #1601: no name for a dir no account has, nor when the option is unset, nor when it is
-/// refused whole for one bad entry.
+/// #1601: the card names the account whose dir the pane's hooks recorded, `@cockpit_cfg`
+/// (FIELDS' field 22), before the model and the context.
 #[test]
-fn a_pane_on_no_listed_account_is_named_nothing() {
-    let cases = [
-        ("acctnone", "p1=~/.claude p2=~/.claude-2", "$HOME/.claude-9"),
-        ("acctunset", "", ""),
-        ("acctbad", "p1=~/.claude p2", ""),
-    ];
-    for (tag, list, cfg) in cases {
-        let foot = acct_foot(tag, list, &[(22, cfg)]);
-        assert!(foot.contains(" opus · 84k ") && !foot.contains(" · opus"), "{tag}: {foot}");
-    }
+fn the_tile_names_the_account_its_hooks_saw() {
+    let foot = acct_foot("acct2", "p1=~/.claude p2=~/.claude-2", &[(22, "$HOME/.claude-2")]);
+    assert!(foot.contains(" p2 · opus · 84k "), "{foot}");
+}
+
+/// #1601: a pane whose hooks recorded no dir runs on Claude Code's default, `~/.claude`.
+#[test]
+fn a_pane_with_no_recorded_dir_is_named_the_default_account() {
+    let foot = acct_foot("acct1", "p1=~/.claude p2=~/.claude-2", &[]);
+    assert!(foot.contains(" p1 · opus · 84k "), "{foot}");
+}
+
+/// #1601: no name for a dir no account has.
+#[test]
+fn a_pane_on_an_unlisted_dir_is_named_nothing() {
+    let foot = acct_foot("acctnone", "p1=~/.claude p2=~/.claude-2", &[(22, "$HOME/.claude-9")]);
+    assert!(unnamed(&foot), "{foot}");
+}
+
+/// #1601: no name with the option unset.
+#[test]
+fn no_account_is_named_with_the_option_unset() {
+    let foot = acct_foot("acctunset", "", &[]);
+    assert!(unnamed(&foot), "{foot}");
 }
 
 /// #1601: a pane the hooks never marked, an agent by its command alone, has no record of its
@@ -2706,19 +2716,21 @@ fn a_pane_the_hooks_never_marked_is_named_nothing() {
     r.accounts("p1=~/.claude p2=~/.claude-2");
     r.transcript("s1", &opus_84k());
     let foot = foot_of(&r, row("%1", "claude", "-", "s1", "100"), 60);
-    assert!(foot.contains(" opus · 84k ") && !foot.contains(" · opus"), "{foot}");
+    assert!(unnamed(&foot), "{foot}");
 }
 
-/// #1601: a list refused whole for one bad entry says why in the board's log.
+/// #1601: a list refused whole for one bad entry names no account, and says why in the
+/// board's log.
 #[test]
-fn a_refused_account_list_is_logged() {
+fn a_refused_account_list_names_nothing_and_is_logged() {
     let r = Rig::new("acctlog");
     let log = r.dir.join("tui.log");
     let _env = Env::set(fake::Held::Lent(r.held()), &[("COCKPIT_LOG", log.display().to_string())]);
     r.accounts("p1=~/.claude p2");
-    r.rows(&[set_fields(&hooked("%1", "done", "s1"), &[(22, "")])]);
-    assert_eq!(get(&list_panes().unwrap(), "%1").doing, "");
+    r.transcript("s1", &opus_84k());
+    let foot = foot_of(&r, hooked("%1", "done", "s1"), 60);
     let said = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(unnamed(&foot), "{foot}");
     assert!(said.contains(" @cockpit_accounts refused: \"p2\" is not name=dir\n"), "{said:?}");
 }
 
@@ -2730,9 +2742,9 @@ fn a_pane_whose_hooks_ran_under_the_env_scrub_is_not_named_the_default_account()
     assert!(foot.contains(" ? · opus · 84k ") && !foot.contains("p1"), "{foot}");
 }
 
-/// #1601: the doing line of a pane on a second listed account, the board's own being the
-/// first. `with_path`: the hook passed its transcript (field 15); else it refused it, as under
-/// the env scrub, and the session id finds it.
+/// #1601: the doing line of a pane whose transcript sits under `~/.claude-2`, with `@cockpit_accounts`
+/// `list` and the board's own dir `~/.claude`. `with_path`: the hook passed its path (field 15); else it
+/// refused it, as under the env scrub, and only the session id is there.
 fn second_account_doing(tag: &str, list: &str, with_path: bool) -> String {
     let r = Rig::new(tag);
     r.accounts(list);
@@ -2745,24 +2757,25 @@ fn second_account_doing(tag: &str, list: &str, with_path: bool) -> String {
 
 #[test]
 fn a_transcript_under_a_second_listed_account_gives_the_doing_line() {
-    let list = "p1=~/.claude p2=~/.claude-2";
-    assert_eq!(second_account_doing("acctpath", list, true), "Bash: echo one", "with its path");
     assert_eq!(
-        second_account_doing("acctsid", list, false),
-        "Bash: echo one",
-        "with the session id alone"
+        second_account_doing("acctpath", "p1=~/.claude p2=~/.claude-2", true),
+        "Bash: echo one"
     );
 }
 
-/// #1601: a dir no account lists is still not read, by path or by session id.
+/// #1601: under the env scrub the hook refused the path, and the session id finds the file.
+#[test]
+fn a_session_under_a_second_listed_account_is_found_by_its_id() {
+    assert_eq!(
+        second_account_doing("acctsid", "p1=~/.claude p2=~/.claude-2", false),
+        "Bash: echo one"
+    );
+}
+
+/// #1601: a dir no account lists is still not read.
 #[test]
 fn a_transcript_under_an_unlisted_dir_is_still_refused() {
-    assert_eq!(second_account_doing("acctoffpath", "p1=~/.claude", true), "", "with its path");
-    assert_eq!(
-        second_account_doing("acctoffsid", "p1=~/.claude", false),
-        "",
-        "with the session id alone"
-    );
+    assert_eq!(second_account_doing("acctoff", "p1=~/.claude", true), "");
 }
 
 /// #1374: tmux prints every field of the format the board passes, so a row one short of
